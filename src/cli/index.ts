@@ -109,7 +109,7 @@ async function cmdJoin(args: string[]): Promise<number> {
       console.log(pc.dim("\nwaiting for approval — Ctrl+C to cancel\n"));
       if (!topicRequested) {
         topicRequested = true;
-        await client.sendEvent("pairing.request_topic", { topic_identifier: transport }, "json");
+        await client.sendEvent("pairing.request_topic", { topic_identifier: transport }, "json", { fireAndForget: true });
       }
     } else if (msg.type === "pairing.approved") {
       approved = msg;
@@ -166,7 +166,7 @@ function authedClient(creds: Credentials): WebPubSubClient {
       if (Date.now() >= accessExpiresAt - 60_000 && !refreshResolve) {
         try {
           const waiter = new Promise<string>((resolve) => { refreshResolve = resolve; });
-          await c.sendEvent("request_refresh_token", {}, "json");
+          await c.sendEvent("request_refresh_token", {}, "json", { fireAndForget: true });
           accessUrl = await Promise.race([
             waiter,
             new Promise<string>((_, reject) => setTimeout(() => reject(new Error("token refresh timeout")), 30_000)),
@@ -288,7 +288,7 @@ async function publish(client: WebPubSubClient, creds: Credentials, targetIdenti
     message_type: "chat.text",
     payload: text,
     target_identifier: target,
-  }, "json");
+  }, "json", { fireAndForget: true });
   console.log(pc.green(`sent to ${targetIdentifier}: ${text}`));
 }
 
@@ -310,7 +310,7 @@ async function listClients(creds: Credentials, onlineOnly: boolean): Promise<voi
     }
   });
   await client.start();
-  await client.sendEvent("clients.list", { topic_identifier: creds.topic_identifier }, "json");
+  await client.sendEvent("clients.list", { topic_identifier: creds.topic_identifier }, "json", { fireAndForget: true });
   const startedAt = Date.now();
   while (!result && Date.now() - startedAt < 10_000) {
     await new Promise((r) => setTimeout(r, 100));
