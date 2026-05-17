@@ -87,6 +87,8 @@ async function cmdJoin(args: string[]): Promise<number> {
     console.error(pc.red("usage: bvg-deamon join --hub <wss-url> --transport <identifier>"));
     return 2;
   }
+  const debug = process.env.BVG_DEBUG === "1";
+  const dbg = (...a: unknown[]) => { if (debug) console.error(pc.dim("[debug]"), ...a as string[]); };
 
   console.log(pc.cyan("connecting to Azure anonymously..."));
   const client = new WebPubSubClient({ getClientAccessUrl: async () => hub }, { protocol: WebPubSubJsonProtocol() });
@@ -97,8 +99,14 @@ async function cmdJoin(args: string[]): Promise<number> {
 
   client.on("connected", (e) => {
     connectionId = e.connectionId;
+    dbg("connected", { connectionId: e.connectionId, userId: e.userId });
   });
+  client.on("disconnected", (e) => {
+    dbg("disconnected", { message: e.message });
+  });
+  client.on("stopped", () => dbg("stopped"));
   client.on("server-message", async (e) => {
+    dbg("server-message raw:", JSON.stringify(e.message.data));
     const msg = asSystemMsg(e.message.data);
     if (!msg) return;
     if (msg.type === "pairing.code") {
@@ -109,7 +117,7 @@ async function cmdJoin(args: string[]): Promise<number> {
       console.log(pc.dim("\nwaiting for approval — Ctrl+C to cancel\n"));
       if (!topicRequested) {
         topicRequested = true;
-        await client.sendEvent("pairing.request_topic", { topic_identifier: transport }, "json", { fireAndForget: true });
+        await client.sendEvent("pairing_request_topic", { topic_identifier: transport }, "json", { fireAndForget: true });
       }
     } else if (msg.type === "pairing.approved") {
       approved = msg;
@@ -310,7 +318,7 @@ async function listClients(creds: Credentials, onlineOnly: boolean): Promise<voi
     }
   });
   await client.start();
-  await client.sendEvent("clients.list", { topic_identifier: creds.topic_identifier }, "json", { fireAndForget: true });
+  await client.sendEvent("clients_list", { topic_identifier: creds.topic_identifier }, "json", { fireAndForget: true });
   const startedAt = Date.now();
   while (!result && Date.now() - startedAt < 10_000) {
     await new Promise((r) => setTimeout(r, 100));
