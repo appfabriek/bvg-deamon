@@ -2,7 +2,7 @@
 import os from "node:os";
 import readline from "node:readline";
 import pc from "picocolors";
-import { WebPubSubClient } from "@azure/web-pubsub-client";
+import { WebPubSubClient, WebPubSubJsonProtocol } from "@azure/web-pubsub-client";
 import { loadCredentials, saveCredentials, wipeCredentials, Credentials } from "./credentials.js";
 
 type Subcommand = (args: string[]) => Promise<number>;
@@ -89,7 +89,7 @@ async function cmdJoin(args: string[]): Promise<number> {
   }
 
   console.log(pc.cyan("connecting to Azure anonymously..."));
-  const client = new WebPubSubClient({ getClientAccessUrl: async () => hub });
+  const client = new WebPubSubClient({ getClientAccessUrl: async () => hub }, { protocol: WebPubSubJsonProtocol() });
   let approved: PairingApprovedMsg | null = null;
   let denied = false;
   let topicRequested = false;
@@ -182,6 +182,7 @@ function authedClient(creds: Credentials): WebPubSubClient {
   }, {
     autoReconnect: true,
     reconnectRetryOptions: { maxRetries: Number.MAX_SAFE_INTEGER, retryDelayInMs: 1_000, maxRetryDelayInMs: 30_000, mode: "Exponential" },
+    protocol: WebPubSubJsonProtocol(),
   });
 
   c.on("server-message", (e) => {
