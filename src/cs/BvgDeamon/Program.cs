@@ -165,7 +165,7 @@ Credentials at %LOCALAPPDATA%\bvg-deamon\credentials.json (or $BVG_DEAMON_CREDEN
         }
 
         client.Connected += (e) => { Console.WriteLine($"connected — connectionId={e.ConnectionId} userId={e.UserId}"); Console.WriteLine($"transport: {creds.TopicIdentifier ?? "(unknown)"}"); Console.WriteLine("type 'reply <text>' to reply, 'send <id> <text>', 'clients', 'quit'"); return Task.CompletedTask; };
-        client.Disconnected += (e) => { Console.WriteLine($"disconnected — {e.Message}"); return Task.CompletedTask; };
+        client.Disconnected += (e) => { Console.WriteLine($"disconnected — {e.DisconnectedMessage?.Reason}"); return Task.CompletedTask; };
         client.ServerMessageReceived += (e) => { HandleEnvelope(AsJsonObject(e.Message.Data)); return Task.CompletedTask; };
         client.GroupMessageReceived += (e) => { HandleEnvelope(AsJsonObject(e.Message.Data)); return Task.CompletedTask; };
 
