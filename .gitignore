@@ -1,0 +1,9 @@
+node_modules/
+.DS_Store
+*.log
+
+# build outputs zijn bewust GECOMMIT zodat install.sh ze direct kan downloaden
+# vanaf raw.githubusercontent.com/appfabriek/bvg-deamon/main/dist/bvg-deamon.js
+# Pas niet dist/ uit unless je een release-pipeline hebt.
+src/cs/BvgDeamon/bin/
+src/cs/BvgDeamon/obj/

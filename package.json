@@ -1,0 +1,21 @@
+{
+  "name": "bvg-deamon",
+  "version": "0.1.0",
+  "private": true,
+  "description": "BvGeert transport daemon — pure Azure Web PubSub client",
+  "license": "MIT",
+  "scripts": {
+    "build": "node scripts/build-node.mjs",
+    "start": "tsx src/cli/index.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "esbuild": "^0.28.0",
+    "tsx": "^4.16.0",
+    "typescript": "^5.5.0"
+  },
+  "dependencies": {
+    "@azure/web-pubsub-client": "^1.0.0",
+    "picocolors": "^1.0.1"
+  }
+}
