@@ -40,9 +40,12 @@ function printUsage(): void {
 bvg-deamon — pure-Azure transport client for bvgeert
 
 Usage:
-  bvg-deamon join --hub <wss://x.webpubsub.azure.com/client/hubs/<hub>> --transport <identifier>
+  bvg-deamon join --hub <wss://x.webpubsub.azure.com/client/hubs/<hub>> --transport <identifier> [--token <jt_xxx>]
       anonymously connect to bvgeert via Azure, request to join a
       transport, print a pairing code and wait for admin approval.
+      With --token (or env BVG_JOIN_TOKEN), redeem a pre-approved
+      join token instead of waiting for an admin — skips the pair-code
+      step entirely.
 
   bvg-deamon daemon
       keep an authenticated WebSocket open. Prints incoming envelopes.
@@ -83,23 +86,31 @@ function asSystemMsg(data: unknown): SystemMsg | null {
 async function cmdJoin(args: string[]): Promise<number> {
   const hub = parseFlag(args, "hub");
   const transport = parseFlag(args, "transport");
+  const tokenFlag = parseFlag(args, "token");
+  const token = tokenFlag ?? process.env.BVG_JOIN_TOKEN ?? undefined;
   if (!hub || !transport) {
-    console.error(pc.red("usage: bvg-deamon join --hub <wss-url> --transport <identifier>"));
+    console.error(pc.red("usage: bvg-deamon join --hub <wss-url> --transport <identifier> [--token <jt_xxx>]"));
     return 2;
   }
   const debug = process.env.BVG_DEBUG === "1";
   const dbg = (...a: unknown[]) => { if (debug) console.error(pc.dim("[debug]"), ...a as string[]); };
 
-  console.log(pc.cyan("connecting to Azure anonymously..."));
+  console.log(pc.cyan(token ? "connecting to Azure (token redeem)..." : "connecting to Azure anonymously..."));
   const client = new WebPubSubClient({ getClientAccessUrl: async () => hub }, { protocol: WebPubSubJsonProtocol() });
   let approved: PairingApprovedMsg | null = null;
   let denied = false;
   let topicRequested = false;
+  let tokenRedeemed = false;
   let connectionId: string | null = null;
 
-  client.on("connected", (e) => {
+  client.on("connected", async (e) => {
     connectionId = e.connectionId;
     dbg("connected", { connectionId: e.connectionId, userId: e.userId });
+    if (token && !tokenRedeemed) {
+      tokenRedeemed = true;
+      dbg("redeeming join token");
+      await client.sendEvent("redeem_join_token", { token, topic_identifier: transport }, "json", { fireAndForget: true });
+    }
   });
   client.on("disconnected", (e) => {
     dbg("disconnected", { message: e.message });
@@ -110,6 +121,9 @@ async function cmdJoin(args: string[]): Promise<number> {
     const msg = asSystemMsg(e.message.data);
     if (!msg) return;
     if (msg.type === "pairing.code") {
+      // Skip the pair-code dance entirely when a token was supplied —
+      // the redeem_join_token event is already in flight from connected.
+      if (token) return;
       console.log("");
       console.log(pc.bold("pair code:"), pc.cyan(msg.code));
       if (msg.admin_url) console.log(`approve in admin: ${msg.admin_url}`);
