@@ -100,7 +100,7 @@ Credentials at %LOCALAPPDATA%\bvg-deamon\credentials.json (or $BVG_DEAMON_CREDEN
                     if (!topicRequested)
                     {
                         topicRequested = true;
-                        await SendEvent(client, "pairing.request_topic", new Dictionary<string, object?> { ["topic_identifier"] = transport });
+                        await SendEvent(client, "pairing_request_topic", new Dictionary<string, object?> { ["topic_identifier"] = transport });
                     }
                     break;
                 case "pairing.approved":
@@ -211,7 +211,7 @@ Credentials at %LOCALAPPDATA%\bvg-deamon\credentials.json (or $BVG_DEAMON_CREDEN
             return Task.CompletedTask;
         };
         await client.StartAsync();
-        await SendEvent(client, "clients.list", new Dictionary<string, object?> { ["topic_identifier"] = creds.TopicIdentifier });
+        await SendEvent(client, "clients_list", new Dictionary<string, object?> { ["topic_identifier"] = creds.TopicIdentifier });
         var done = await Task.WhenAny(resultTcs.Task, Task.Delay(TimeSpan.FromSeconds(10)));
         await client.StopAsync();
         if (done != resultTcs.Task) throw new Exception("timeout waiting for clients list");
@@ -235,7 +235,7 @@ Credentials at %LOCALAPPDATA%\bvg-deamon\credentials.json (or $BVG_DEAMON_CREDEN
         TaskCompletionSource<JsonElement?> resultTcs = new();
         // Listener temporarily added; the daemon already has one but we reuse it via the tcs.
         // Send the event; the global handler will publish the result line.
-        await SendEvent(client, "clients.list", new Dictionary<string, object?> { ["topic_identifier"] = creds.TopicIdentifier });
+        await SendEvent(client, "clients_list", new Dictionary<string, object?> { ["topic_identifier"] = creds.TopicIdentifier });
     }
 
     private static async Task<int> CmdSend(string[] args)
