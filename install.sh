@@ -4,6 +4,18 @@
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/appfabriek/bvg-deamon/main/install.sh | bash
 #
+# One-shot install + pair (recommended — the bvgeert admin UI generates
+# this line for you):
+#   curl -fsSL https://raw.githubusercontent.com/appfabriek/bvg-deamon/main/install.sh \
+#     | BVG_JOIN_TOKEN=jt_xxx BVG_AZURE_HUB=wss://... BVG_TRANSPORT=my-conn bash
+#
+# Env vars (all optional; supplied together they trigger an automatic
+# `bvg-deamon join` after install):
+#   BVG_JOIN_TOKEN   one-time pre-approved join token (jt_…)
+#   BVG_AZURE_HUB    full Azure Web PubSub WSS URL (with anonymous access token)
+#   BVG_TRANSPORT    transport / connection identifier on the bvgeert side
+#   BVG_DOMAIN       optional metadata, written to the config file for reference
+#
 # Installs Node.js (if missing), downloads the latest bvg-deamon bundle,
 # and places a launcher script in /usr/local/bin/bvg-deamon (or
 # ~/.local/bin/bvg-deamon if /usr/local isn't writable).
@@ -73,9 +85,32 @@ EOF
 chmod +x "$BIN_DIR/bvg-deamon"
 
 done_ "bvg-deamon installed to $BIN_DIR/bvg-deamon"
+
+# If pairing env vars are supplied, persist them and auto-pair.
+if [ -n "${BVG_JOIN_TOKEN:-}" ] && [ -n "${BVG_AZURE_HUB:-}" ]; then
+  CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/bvg-deamon"
+  mkdir -p "$CONFIG_DIR"
+  CONFIG_ENV="$CONFIG_DIR/install.env"
+  {
+    [ -n "${BVG_DOMAIN:-}" ] && echo "BVG_DOMAIN=$BVG_DOMAIN"
+    echo "BVG_AZURE_HUB=$BVG_AZURE_HUB"
+    [ -n "${BVG_TRANSPORT:-}" ] && echo "BVG_TRANSPORT=$BVG_TRANSPORT"
+  } > "$CONFIG_ENV"
+  chmod 600 "$CONFIG_ENV"
+
+  TRANSPORT="${BVG_TRANSPORT:-default}"
+  say "pairing with bvgeert via Azure (transport=$TRANSPORT)..."
+  "$BIN_DIR/bvg-deamon" join \
+    --hub "$BVG_AZURE_HUB" \
+    --transport "$TRANSPORT" \
+    --token "$BVG_JOIN_TOKEN"
+  done_ "paired — credentials at $CONFIG_DIR/credentials.json"
+  exit 0
+fi
+
 case ":$PATH:" in
   *":$BIN_DIR:"*) ;;
   *) say "Add $BIN_DIR to your PATH: export PATH=\"$BIN_DIR:\$PATH\"" ;;
 esac
 
-say "next step: bvg-deamon join --hub <wss-url> --transport <identifier>"
+say "next step: bvg-deamon join --hub <wss-url> --transport <identifier> [--token <jt_xxx>]"
