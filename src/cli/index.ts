@@ -3,7 +3,8 @@ import os from "node:os";
 import readline from "node:readline";
 import pc from "picocolors";
 import { WebPubSubClient, WebPubSubJsonProtocol } from "@azure/web-pubsub-client";
-import { loadCredentials, saveCredentials, wipeCredentials, Credentials } from "./credentials.js";
+import { loadCredentials, saveCredentials, wipeCredentials, credentialMode, Credentials } from "./credentials.js";
+import { joinDirect, daemonDirect } from "./direct.js";
 
 type Subcommand = (args: string[]) => Promise<number>;
 
@@ -84,12 +85,20 @@ function asSystemMsg(data: unknown): SystemMsg | null {
 }
 
 async function cmdJoin(args: string[]): Promise<number> {
-  const hub = parseFlag(args, "hub");
-  const transport = parseFlag(args, "transport");
+  const host = parseFlag(args, "host") ?? process.env.BVG_BVGEERT_HOST;
   const tokenFlag = parseFlag(args, "token");
   const token = tokenFlag ?? process.env.BVG_JOIN_TOKEN ?? undefined;
+  const transport = parseFlag(args, "transport") ?? process.env.BVG_TRANSPORT;
+
+  // Direct-mode: bvgeert direct bereikbaar via HTTPS.
+  if (host && token) {
+    return await joinDirect(host, token, transport);
+  }
+
+  const hub = parseFlag(args, "hub") ?? process.env.BVG_AZURE_HUB;
   if (!hub || !transport) {
-    console.error(pc.red("usage: bvg-deamon join --hub <wss-url> --transport <identifier> [--token <jt_xxx>]"));
+    console.error(pc.red("usage: bvg-deamon join --host <bvgeert-host> --token <jt_xxx>     (directe route)"));
+    console.error(pc.red("       bvg-deamon join --hub <wss-url> --transport <id> [--token <jt_xxx>]   (Azure-route)"));
     return 2;
   }
   const debug = process.env.BVG_DEBUG === "1";
@@ -230,6 +239,9 @@ function requireCreds(): Credentials {
 
 async function cmdDaemon(_args: string[]): Promise<number> {
   const creds = requireCreds();
+  if (credentialMode(creds) === "direct") {
+    return await daemonDirect(creds);
+  }
   const client = authedClient(creds);
 
   let lastSender: string | null = null;

@@ -7,18 +7,20 @@
 # One-shot install + pair (recommended — the bvgeert admin UI generates
 # this line for you):
 #   curl -fsSL https://raw.githubusercontent.com/appfabriek/bvg-deamon/main/install.sh \
-#     | BVG_JOIN_TOKEN=jt_xxx BVG_AZURE_HUB=wss://... BVG_TRANSPORT=my-conn bash
+#     | BVG_JOIN_TOKEN=jt_xxx BVG_BVGEERT_HOST=bvgeert.example bash
 #
-# Env vars (all optional; supplied together they trigger an automatic
-# `bvg-deamon join` after install):
-#   BVG_JOIN_TOKEN   one-time pre-approved join token (jt_…)
-#   BVG_AZURE_HUB    full Azure Web PubSub WSS URL (with anonymous access token)
-#   BVG_TRANSPORT    transport / connection identifier on the bvgeert side
-#   BVG_DOMAIN       optional metadata, written to the config file for reference
+# Env vars (auto-pair triggers when JOIN_TOKEN + a route are both present):
+#   BVG_JOIN_TOKEN     one-time pre-approved join token (jt_…)
+#   BVG_BVGEERT_HOST   bvgeert hostname for direct HTTPS+WSS route (preferred)
+#   BVG_AZURE_HUB      Azure Web PubSub WSS URL (fallback for restricted networks)
+#   BVG_TRANSPORT      transport / connection identifier (optional, server
+#                      derives from the join-token)
+#   BVG_DOMAIN         optional metadata, stored in install.env for reference
 #
-# Installs Node.js (if missing), downloads the latest bvg-deamon bundle,
-# and places a launcher script in /usr/local/bin/bvg-deamon (or
-# ~/.local/bin/bvg-deamon if /usr/local isn't writable).
+# Installs Node.js (if missing), downloads the bvg-deamon bundle, places a
+# launcher script in /usr/local/bin/bvg-deamon (or ~/.local/bin), and
+# attempts to install a system service (launchd on macOS, systemd-user on
+# Linux). Auto-pair runs in the foreground so you see the result.
 set -euo pipefail
 
 REPO="appfabriek/bvg-deamon"
@@ -86,25 +88,87 @@ chmod +x "$BIN_DIR/bvg-deamon"
 
 done_ "bvg-deamon installed to $BIN_DIR/bvg-deamon"
 
-# If pairing env vars are supplied, persist them and auto-pair.
-if [ -n "${BVG_JOIN_TOKEN:-}" ] && [ -n "${BVG_AZURE_HUB:-}" ]; then
+# Decide pairing route from env-vars.
+HAS_TOKEN="${BVG_JOIN_TOKEN:-}"
+PAIRED=0
+if [ -n "$HAS_TOKEN" ]; then
   CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/bvg-deamon"
   mkdir -p "$CONFIG_DIR"
   CONFIG_ENV="$CONFIG_DIR/install.env"
   {
-    [ -n "${BVG_DOMAIN:-}" ] && echo "BVG_DOMAIN=$BVG_DOMAIN"
-    echo "BVG_AZURE_HUB=$BVG_AZURE_HUB"
-    [ -n "${BVG_TRANSPORT:-}" ] && echo "BVG_TRANSPORT=$BVG_TRANSPORT"
+    [ -n "${BVG_DOMAIN:-}" ]       && echo "BVG_DOMAIN=$BVG_DOMAIN"
+    [ -n "${BVG_BVGEERT_HOST:-}" ] && echo "BVG_BVGEERT_HOST=$BVG_BVGEERT_HOST"
+    [ -n "${BVG_AZURE_HUB:-}" ]    && echo "BVG_AZURE_HUB=$BVG_AZURE_HUB"
+    [ -n "${BVG_TRANSPORT:-}" ]    && echo "BVG_TRANSPORT=$BVG_TRANSPORT"
   } > "$CONFIG_ENV"
   chmod 600 "$CONFIG_ENV"
 
-  TRANSPORT="${BVG_TRANSPORT:-default}"
-  say "pairing with bvgeert via Azure (transport=$TRANSPORT)..."
-  "$BIN_DIR/bvg-deamon" join \
-    --hub "$BVG_AZURE_HUB" \
-    --transport "$TRANSPORT" \
-    --token "$BVG_JOIN_TOKEN"
-  done_ "paired — credentials at $CONFIG_DIR/credentials.json"
+  if [ -n "${BVG_BVGEERT_HOST:-}" ]; then
+    say "pairing with bvgeert directly at $BVG_BVGEERT_HOST..."
+    "$BIN_DIR/bvg-deamon" join --host "$BVG_BVGEERT_HOST" --token "$HAS_TOKEN" \
+      ${BVG_TRANSPORT:+--transport "$BVG_TRANSPORT"} && PAIRED=1 || PAIRED=0
+  elif [ -n "${BVG_AZURE_HUB:-}" ]; then
+    TRANSPORT="${BVG_TRANSPORT:-default}"
+    say "pairing with bvgeert via Azure (transport=$TRANSPORT)..."
+    "$BIN_DIR/bvg-deamon" join --hub "$BVG_AZURE_HUB" --transport "$TRANSPORT" --token "$HAS_TOKEN" \
+      && PAIRED=1 || PAIRED=0
+  fi
+fi
+
+# Install system service when paired.
+if [ "$PAIRED" = "1" ]; then
+  case "$OS" in
+    linux)
+      UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+      mkdir -p "$UNIT_DIR"
+      cat >"$UNIT_DIR/bvg-deamon.service" <<EOF
+[Unit]
+Description=BvGeert transport daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=$BIN_DIR/bvg-deamon daemon
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+EOF
+      if command -v systemctl >/dev/null 2>&1; then
+        systemctl --user daemon-reload || true
+        systemctl --user enable --now bvg-deamon.service || true
+        done_ "systemd-user service draait: bvg-deamon.service"
+      else
+        say "systemd niet beschikbaar — unit-bestand staat in $UNIT_DIR"
+      fi
+      ;;
+    darwin)
+      PLIST="$HOME/Library/LaunchAgents/com.appfabriek.bvg-deamon.plist"
+      mkdir -p "$(dirname "$PLIST")"
+      cat >"$PLIST" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.appfabriek.bvg-deamon</string>
+  <key>ProgramArguments</key><array>
+    <string>$BIN_DIR/bvg-deamon</string>
+    <string>daemon</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>/tmp/bvg-deamon.log</string>
+  <key>StandardErrorPath</key><string>/tmp/bvg-deamon.err</string>
+</dict>
+</plist>
+EOF
+      launchctl unload "$PLIST" 2>/dev/null || true
+      launchctl load "$PLIST"
+      done_ "launchd-agent geladen: com.appfabriek.bvg-deamon"
+      ;;
+  esac
   exit 0
 fi
 
@@ -113,4 +177,5 @@ case ":$PATH:" in
   *) say "Add $BIN_DIR to your PATH: export PATH=\"$BIN_DIR:\$PATH\"" ;;
 esac
 
-say "next step: bvg-deamon join --hub <wss-url> --transport <identifier> [--token <jt_xxx>]"
+say "next step: bvg-deamon join --host <bvgeert-host> --token <jt_xxx>"
+say "           of (Azure-fallback): bvg-deamon join --hub <wss-url> --transport <id> --token <jt_xxx>"
