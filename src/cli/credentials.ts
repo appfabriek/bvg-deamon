@@ -2,15 +2,32 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 
+// Daemon supports two transport modes:
+//   - "direct"  : connect WSS naar bvgeert /cable (ActionCable). Vereist bvgeert_host.
+//   - "azure"   : connect WPS hub voor restricted networks. Vereist azure_hub_url.
+// Mode wordt afgeleid uit welke credentials gezet zijn.
 export type Credentials = {
-  azure_hub_url: string;
+  // gedeeld
   client_id: string;
   registration_token: string;
-  topic_identifier?: string;
+  connection_identifier?: string;
+  // direct-mode
   bvgeert_host?: string;
+  cable_url?: string;
+  // azure-mode (legacy / restricted-network fallback)
+  azure_hub_url?: string;
   access_url?: string;
   access_url_expires_at?: string;
+  topic_identifier?: string; // historisch synoniem voor connection_identifier
 };
+
+export type CredentialMode = "direct" | "azure";
+
+export function credentialMode(creds: Credentials): CredentialMode | null {
+  if (creds.bvgeert_host) return "direct";
+  if (creds.azure_hub_url) return "azure";
+  return null;
+}
 
 function defaultPath(): string {
   const xdg = process.env.XDG_CONFIG_HOME;
@@ -27,7 +44,8 @@ export function loadCredentials(): Credentials | null {
   if (!fs.existsSync(p)) return null;
   try {
     const data = JSON.parse(fs.readFileSync(p, "utf8")) as Credentials;
-    if (!data.azure_hub_url || !data.client_id || !data.registration_token) return null;
+    if (!data.client_id || !data.registration_token) return null;
+    if (!credentialMode(data)) return null;
     return data;
   } catch {
     return null;
