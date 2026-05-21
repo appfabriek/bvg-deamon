@@ -14,6 +14,7 @@ export type Credentials = {
   // direct-mode
   bvgeert_host?: string;
   cable_url?: string;
+  transport_token?: string; // signed transport-session token (7d)
   // azure-mode (legacy / restricted-network fallback)
   azure_hub_url?: string;
   access_url?: string;

@@ -6,12 +6,25 @@ import { Credentials, saveCredentials } from "./credentials.js";
 type RedeemResponse = {
   client_identifier: string;
   registration_token: string;
+  transport_token: string;
   websocket_url: string;
   connection_identifier?: string;
 };
 
+// Accepteert "bvgeert.com" (default HTTPS), "bvgeert.lvh.me:3000" (default
+// HTTPS — geef expliciet http://… mee voor dev), of een volledige URL met
+// scheme. Voor lokale dev: `--host http://bvgeert.lvh.me:3000`.
+function baseUrl(host: string): string {
+  if (host.startsWith("http://") || host.startsWith("https://")) return host.replace(/\/$/, "");
+  return `https://${host}`;
+}
+
+function wsBaseUrl(host: string): string {
+  return baseUrl(host).replace(/^http/, "ws");
+}
+
 export async function redeemDirect(host: string, token: string): Promise<RedeemResponse> {
-  const url = `https://${host}/api/v1/transport/redeem`;
+  const url = `${baseUrl(host)}/api/v1/transport/redeem`;
   const res = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json", "Accept": "application/json" },
@@ -30,6 +43,7 @@ export async function joinDirect(host: string, token: string, transport?: string
   const path = saveCredentials({
     client_id: r.client_identifier,
     registration_token: r.registration_token,
+    transport_token: r.transport_token,
     bvgeert_host: host,
     cable_url: r.websocket_url,
     connection_identifier: r.connection_identifier ?? transport,
@@ -42,8 +56,11 @@ export async function joinDirect(host: string, token: string, transport?: string
 // Minimal ActionCable client: opens a WS, subscribes to TransportChannel
 // with the right connection_identifier, prints incoming messages.
 export async function daemonDirect(creds: Credentials): Promise<number> {
-  const cableUrl = creds.cable_url ?? `wss://${creds.bvgeert_host}/cable`;
-  const url = `${cableUrl}?transport_token=${encodeURIComponent(creds.registration_token)}`;
+  const cableUrl = creds.cable_url ?? `${wsBaseUrl(creds.bvgeert_host!)}/cable`;
+  // ApplicationCable verwacht een Rails-signed transport-session token.
+  // Fallback naar registration_token voor backward-compat.
+  const wsToken = creds.transport_token ?? creds.registration_token;
+  const url = `${cableUrl}?transport_token=${encodeURIComponent(wsToken)}`;
   const debug = process.env.BVG_DEBUG === "1";
   const dbg = (...a: unknown[]) => { if (debug) console.error(pc.dim("[debug]"), ...a as string[]); };
 
@@ -53,7 +70,8 @@ export async function daemonDirect(creds: Credentials): Promise<number> {
     console.error(pc.red("Node lacks global WebSocket. Require Node >= 22."));
     return 1;
   }
-  const ws = new WS(url);
+  // ActionCable sub-protocol — anders sluit Rails de verbinding meteen.
+  const ws = new WS(url, [ "actioncable-v1-json" ]);
   const connId = creds.connection_identifier;
   const subId = JSON.stringify({ channel: "TransportChannel", connection_identifier: connId });
 
