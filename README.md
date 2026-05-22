@@ -172,6 +172,16 @@ Releases: GitHub Actions publiceert bij iedere `v*`-tag het volgende:
 - `bvg-deamon-windows-x64.zip` (bevat `bvg-deamon.exe`, `install.ps1`,
   `uninstall.ps1`, `README.txt` — voor Windows-installer)
 
-## Volgende sessie / handoff
+## Meer documentatie
 
-Zie [`CLAUDE.md`](CLAUDE.md).
+| Doc | Voor wie | Wat |
+|---|---|---|
+| [docs/STATUS.md](docs/STATUS.md) | iedereen | capability matrix per release, live-test bewijzen, deployment-status |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | ontwikkelaars | hoe direct/azure/fallback/self-update werken |
+| [docs/OPERATIONS.md](docs/OPERATIONS.md) | operators | install/update/monitor/troubleshoot/uninstall cookbook |
+| [CHANGELOG.md](CHANGELOG.md) | iedereen | release-historie met PR-links |
+| [CLAUDE.md](CLAUDE.md) | volgende Claude-sessie | handoff-guide |
+
+Server-side (token issuance, broadcast-triggers, multi-tenancy): zie
+[`docs/operations/transport-clients.md`](https://github.com/Geert/bvgeert/blob/main/docs/operations/transport-clients.md)
+in de bvgeert-repo.
