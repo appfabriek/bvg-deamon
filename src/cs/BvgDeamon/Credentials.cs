@@ -93,6 +93,15 @@ public sealed class Credentials
     private static void TryLockDown(string path)
     {
         if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows)) return;
+        // Only lock the ACL on the service-mode credentials path under %ProgramData%.
+        // For interactive/standalone runs (LOCALAPPDATA or a custom path) we leave
+        // NTFS inheritance alone — otherwise the user who just paired can't read
+        // his own credentials.json when starting the daemon non-elevated.
+        var programData = Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData);
+        if (string.IsNullOrEmpty(programData) ||
+            !path.StartsWith(programData, StringComparison.OrdinalIgnoreCase))
+            return;
+
         try
         {
             var fi = new FileInfo(path);
