@@ -43,6 +43,13 @@ if ($svc) {
   Say "service '$ServiceName' not registered, skipping"
 }
 
+$updateTask = "$ServiceName-update"
+$existingTask = Get-ScheduledTask -TaskName $updateTask -ErrorAction SilentlyContinue
+if ($existingTask) {
+  Say "removing scheduled update task '$updateTask'..."
+  Unregister-ScheduledTask -TaskName $updateTask -Confirm:$false
+}
+
 if (-not $KeepFiles -and (Test-Path $InstallDir)) {
   Say "removing $InstallDir..."
   Remove-Item -Path $InstallDir -Recurse -Force

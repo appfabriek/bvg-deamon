@@ -13,6 +13,8 @@
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
     <DebugType>embedded</DebugType>
     <UserSecretsId>bvg-deamon-windows</UserSecretsId>
+    <!-- Version is overridden by `dotnet publish -p:Version=0.x.y` in the release workflow. -->
+    <Version>0.0.0-dev</Version>
   </PropertyGroup>
 
   <ItemGroup>

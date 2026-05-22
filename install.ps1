@@ -63,7 +63,38 @@ if (-not $IsAdmin) {
   exit
 }
 
-# --- 2. Resolve required env-vars ----------------------------------------
+# --- 2. Pre-flight checks ------------------------------------------------
+# Soft fails (warnings) for the non-fatal checks, hard fails for things that
+# absolutely won't work. Keeps `iwr ... | iex` debuggable on weird machines.
+
+$WinVer = [Environment]::OSVersion.Version
+if ($WinVer.Major -lt 10) {
+  Fail "Windows 10 or newer is required (detected: $($WinVer.ToString()))"
+}
+
+# Disk space — 200 MB needed (77MB exe + 77MB rollback + headroom)
+$drive = (Get-Item $env:ProgramData).PSDrive
+if ($drive.Free -lt 200MB) {
+  Fail "less than 200 MB free on drive $($drive.Name): - install needs ~150 MB"
+}
+
+# Reachability of GitHub release host. Don't block on this (corp proxy can be weird)
+# but warn the operator early.
+function Test-Reachable {
+  param([string]$Host_, [int]$Port = 443, [int]$TimeoutMs = 3000)
+  try {
+    $tcp = New-Object System.Net.Sockets.TcpClient
+    $iar = $tcp.BeginConnect($Host_, $Port, $null, $null)
+    $ok = $iar.AsyncWaitHandle.WaitOne($TimeoutMs)
+    if ($ok -and $tcp.Connected) { $tcp.EndConnect($iar); $tcp.Close(); return $true }
+    $tcp.Close(); return $false
+  } catch { return $false }
+}
+if (-not (Test-Reachable "github.com")) {
+  Say "WARN: github.com:443 not reachable from this machine - download likely to fail"
+}
+
+# --- 3. Resolve required env-vars ----------------------------------------
 $JoinToken   = $env:BVG_JOIN_TOKEN
 $BvgeertHost = $env:BVG_BVGEERT_HOST
 $Transport   = $env:BVG_TRANSPORT
@@ -183,9 +214,43 @@ if ($svc -and $svc.Status -eq "Running") {
   Fail "service did not reach Running state - check $InstallDir\logs\"
 }
 
+# --- 6. Schedule daily self-update ---------------------------------------
+# The release zip includes scripts/bvg-deamon-update.ps1. It's copied into
+# $InstallDir during extraction. We schedule it to run once a day at a random
+# minute (avoids all clients hammering the GitHub API at the same second).
+$UpdaterScript = Join-Path $InstallDir "bvg-deamon-update.ps1"
+$UpdateTaskName = "$ServiceName-update"
+if (Test-Path $UpdaterScript) {
+  Say "scheduling daily self-update task '$UpdateTaskName'..."
+  $randomMinute = Get-Random -Minimum 0 -Maximum 60
+  $randomHour = Get-Random -Minimum 3 -Maximum 5   # 3-4am LOCAL, low-traffic window
+  $trigger = New-ScheduledTaskTrigger -Daily -At ([datetime]::Today.AddHours($randomHour).AddMinutes($randomMinute))
+  $action = New-ScheduledTaskAction `
+    -Execute "powershell.exe" `
+    -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$UpdaterScript`""
+  $principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
+  $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 30)
+  Register-ScheduledTask -TaskName $UpdateTaskName -Trigger $trigger -Action $action -Principal $principal -Settings $settings -Force | Out-Null
+  Done "self-update task registered (daily at ${randomHour}:$('{0:00}' -f $randomMinute))"
+} else {
+  Say "WARN: $UpdaterScript not found - skipping self-update scheduler (older release zip?)"
+}
+
+# Persist version stamp so the updater knows what's installed.
+if (Test-Path (Join-Path $InstallDir "version.txt")) {
+  # Already in the zip — keep what the release stamped.
+} else {
+  # Fallback: ask the exe.
+  try { (& $ExePath --version).Trim() | Set-Content -Path (Join-Path $InstallDir "version.txt") -NoNewline -Encoding ASCII } catch { }
+}
+
 Done "installation complete"
 Write-Host ""
-Write-Host "logs:        $InstallDir\logs\bvg-deamon-*.log"
-Write-Host "credentials: $CredentialsPath"
-Write-Host "service:     sc.exe query $ServiceName"
-Write-Host "re-pair:     `$env:BVG_DEAMON_CREDENTIALS = '$CredentialsPath'; & '$ExePath' join --host <host> --token <jt_...>; Restart-Service $ServiceName"
+Write-Host "logs:         $InstallDir\logs\bvg-deamon-*.log"
+Write-Host "credentials:  $CredentialsPath"
+Write-Host "service:      sc.exe query $ServiceName"
+Write-Host "update task:  Get-ScheduledTask -TaskName $UpdateTaskName"
+Write-Host "update log:   $InstallDir\logs\updater.log"
+Write-Host "force update: Start-ScheduledTask -TaskName $UpdateTaskName"
+Write-Host "opt-out:      Disable-ScheduledTask -TaskName $UpdateTaskName"
+Write-Host "re-pair:      `$env:BVG_DEAMON_CREDENTIALS = '$CredentialsPath'; & '$ExePath' join --host <host> --token <jt_...>; Restart-Service $ServiceName"

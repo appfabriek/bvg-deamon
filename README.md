@@ -100,6 +100,33 @@ Credentials staan in:
 Logs (Windows-service): `%ProgramData%\bvg-deamon\logs\bvg-deamon-*.log`
 (rolling, 10 MB × 5 bestanden).
 
+## Self-update
+
+De installers registreren een **dagelijkse self-update**-job die kijkt of er
+een nieuwere `v*`-tag (stable, geen prerelease) is op
+[appfabriek/bvg-deamon](https://github.com/appfabriek/bvg-deamon/releases) en
+die automatisch installeert. SHA256-validatie tegen de meegeleverde
+`.sha256`-asset, automatische rollback naar de vorige versie als de nieuwe
+niet start.
+
+| Platform | Mechanisme | Opt-out |
+|---|---|---|
+| Windows | Scheduled Task `bvg-deamon-update` (daily 03:00-05:00 local + random minute) | `Disable-ScheduledTask -TaskName bvg-deamon-update` |
+| Linux   | systemd-user timer `bvg-deamon-update.timer` (daily + `RandomizedDelaySec=1h`) | `systemctl --user disable --now bvg-deamon-update.timer` |
+| macOS   | launchd-agent `com.appfabriek.bvg-deamon-update` (daily 03:00-04:59 local) | `launchctl unload ~/Library/LaunchAgents/com.appfabriek.bvg-deamon-update.plist` |
+
+Logs:
+- Windows: `%ProgramData%\bvg-deamon\logs\updater.log`
+- Linux/macOS: `~/.local/state/bvg-deamon/updater.log`
+
+Force een update-check meteen:
+- Windows: `Start-ScheduledTask -TaskName bvg-deamon-update`
+- Linux: `systemctl --user start bvg-deamon-update.service`
+- macOS: `~/.local/lib/bvg-deamon/bvg-deamon-update.sh --force`
+
+De client-versie zie je via `bvg-deamon --version` of (Windows) in
+`%ProgramData%\bvg-deamon\version.txt`.
+
 ## Wat is dit precies
 
 Bvgeert is een multi-tenant Rails-app waar verschillende domeinen draaien.

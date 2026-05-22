@@ -26,6 +26,15 @@ jobs:
         with:
           dotnet-version: "10.0.x"
 
+      - name: Resolve version from tag
+        id: ver
+        shell: pwsh
+        run: |
+          $tag = "${{ github.event.inputs.tag || github.ref_name }}"
+          $version = $tag.TrimStart("v")
+          "version=$version" >> $env:GITHUB_OUTPUT
+          Write-Host "version=$version"
+
       - name: Publish single-file exe
         shell: pwsh
         run: |
@@ -34,6 +43,7 @@ jobs:
             -p:PublishSingleFile=true `
             -p:IncludeNativeLibrariesForSelfExtract=true `
             -p:DebugType=embedded `
+            -p:Version=${{ steps.ver.outputs.version }} `
             -o publish/win-x64
 
       - name: Stage package contents
@@ -44,6 +54,8 @@ jobs:
           Copy-Item publish/win-x64/bvg-deamon.exe $stage/
           Copy-Item install.ps1 $stage/
           Copy-Item uninstall.ps1 $stage/
+          if (Test-Path scripts/bvg-deamon-update.ps1) { Copy-Item scripts/bvg-deamon-update.ps1 $stage/ }
+          "${{ steps.ver.outputs.version }}" | Set-Content -Path "$stage/version.txt" -NoNewline -Encoding ASCII
           @"
           bvg-deamon — Windows transport client
           =====================================
@@ -69,16 +81,61 @@ jobs:
           Credentials: %ProgramData%\bvg-deamon\credentials.json
           "@ | Set-Content -Path "$stage/README.txt" -Encoding UTF8
 
-      - name: Create zip
+      - name: Create zip + SHA256
         shell: pwsh
         run: |
           $out = "bvg-deamon-windows-x64.zip"
           if (Test-Path $out) { Remove-Item $out -Force }
           Compress-Archive -Path stage/win-x64/* -DestinationPath $out
+          # SHA256 sum (lowercase hex, "<hash>  <filename>" sha256sum-format).
+          $hash = (Get-FileHash -Path $out -Algorithm SHA256).Hash.ToLower()
+          "$hash  $out" | Set-Content -Path "$out.sha256" -NoNewline -Encoding ASCII
+          Write-Host "sha256: $hash"
 
       - name: Attach to release
         uses: softprops/action-gh-release@v2
         with:
-          files: bvg-deamon-windows-x64.zip
+          files: |
+            bvg-deamon-windows-x64.zip
+            bvg-deamon-windows-x64.zip.sha256
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          fail_on_unmatched_files: true
+
+  node:
+    name: Node bundle (Linux/macOS)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Build bundle
+        run: |
+          npm ci || npm install
+          npm run build
+
+      - name: Stage bundle + sha256 + version + update script
+        run: |
+          version="${{ github.event.inputs.tag || github.ref_name }}"
+          version="${version#v}"
+          mkdir -p stage
+          cp dist/bvg-deamon.js stage/bvg-deamon.js
+          (cd stage && sha256sum bvg-deamon.js > bvg-deamon.js.sha256)
+          printf '%s' "$version" > stage/version.txt
+          cp scripts/bvg-deamon-update.sh stage/bvg-deamon-update.sh
+          chmod +x stage/bvg-deamon-update.sh
+
+      - name: Attach to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            stage/bvg-deamon.js
+            stage/bvg-deamon.js.sha256
+            stage/version.txt
+            stage/bvg-deamon-update.sh
           tag_name: ${{ github.event.inputs.tag || github.ref_name }}
           fail_on_unmatched_files: true
