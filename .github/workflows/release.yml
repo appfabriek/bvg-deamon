@@ -1,0 +1,84 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to publish a release for (e.g. v0.2.0)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    name: Windows x64 (.NET self-contained)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Publish single-file exe
+        shell: pwsh
+        run: |
+          dotnet publish src/cs/BvgDeamon/BvgDeamon.csproj `
+            -c Release -r win-x64 --self-contained `
+            -p:PublishSingleFile=true `
+            -p:IncludeNativeLibrariesForSelfExtract=true `
+            -p:DebugType=embedded `
+            -o publish/win-x64
+
+      - name: Stage package contents
+        shell: pwsh
+        run: |
+          $stage = "stage/win-x64"
+          New-Item -ItemType Directory -Path $stage -Force | Out-Null
+          Copy-Item publish/win-x64/bvg-deamon.exe $stage/
+          Copy-Item install.ps1 $stage/
+          Copy-Item uninstall.ps1 $stage/
+          @"
+          bvg-deamon — Windows transport client
+          =====================================
+
+          Install (one-liner, elevated PowerShell will be requested):
+
+              `$env:BVG_JOIN_TOKEN   = "jt_..."
+              `$env:BVG_BVGEERT_HOST = "https://staging.rozendom.nl"
+              `$env:BVG_TRANSPORT    = "my-connection"  # optional
+              iwr https://raw.githubusercontent.com/appfabriek/bvg-deamon/main/install.ps1 -UseBasicParsing | iex
+
+          Or, if you already extracted this zip:
+
+              .\install.ps1
+
+          Uninstall:
+
+              .\uninstall.ps1            # removes service + install dir
+              .\uninstall.ps1 -KeepFiles # removes service only
+
+          Logs:        %ProgramData%\bvg-deamon\logs\bvg-deamon-*.log
+          Service:     sc.exe query bvg-deamon
+          Credentials: %ProgramData%\bvg-deamon\credentials.json
+          "@ | Set-Content -Path "$stage/README.txt" -Encoding UTF8
+
+      - name: Create zip
+        shell: pwsh
+        run: |
+          $out = "bvg-deamon-windows-x64.zip"
+          if (Test-Path $out) { Remove-Item $out -Force }
+          Compress-Archive -Path stage/win-x64/* -DestinationPath $out
+
+      - name: Attach to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: bvg-deamon-windows-x64.zip
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          fail_on_unmatched_files: true

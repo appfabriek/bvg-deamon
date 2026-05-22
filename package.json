@@ -1,8 +1,8 @@
 {
   "name": "bvg-deamon",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "private": true,
-  "description": "BvGeert transport daemon — pure Azure Web PubSub client",
+  "description": "BvGeert transport daemon — direct ActionCable client with Azure WebPubSub fallback",
   "license": "MIT",
   "scripts": {
     "build": "node scripts/build-node.mjs",

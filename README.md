@@ -1,82 +1,111 @@
 # bvg-deamon
 
-Transport-client voor het BvGeert-netwerk. Praat pure-Azure (Web PubSub) zodat hij ook draait vanaf sites die alleen `wss://*.webpubsub.azure.com:443` uit mogen.
+Transport-client voor het BvGeert-netwerk. Twee modi in één binary:
+
+- **Direct** (default, nieuw) — HTTPS naar `bvgeert` voor de eenmalige pairing
+  (`POST /api/v1/transport/redeem`) en daarna een doorlopende WSS-verbinding
+  naar `/cable` (Rails ActionCable, sub-protocol `actioncable-v1-json`).
+- **Azure** (legacy / restricted networks) — pure Azure Web PubSub. Werkt
+  vanaf sites die alleen `wss://*.webpubsub.azure.com:443` uit mogen.
+
+Welke modus actief is wordt afgeleid uit de credentials: `bvgeert_host`
+betekent direct, `azure_hub_url` betekent azure.
 
 ## Install — single line
 
-**macOS / Linux:**
+**macOS / Linux** (Node-bundle, gebruikersservice via `systemd --user`):
+
 ```bash
+export BVG_JOIN_TOKEN="jt_..."
+export BVG_BVGEERT_HOST="https://staging.rozendom.nl"
+export BVG_TRANSPORT="my-connection"   # optional
 curl -fsSL https://raw.githubusercontent.com/appfabriek/bvg-deamon/main/install.sh | bash
 ```
 
-**Windows:**
+**Windows** (zelf-contained .NET-exe, draait als Windows-service onder
+`Local System`, start automatisch bij boot, herstart bij crash):
+
 ```powershell
+$env:BVG_JOIN_TOKEN   = "jt_..."
+$env:BVG_BVGEERT_HOST = "https://staging.rozendom.nl"
+$env:BVG_TRANSPORT    = "my-connection"   # optional
 iwr https://raw.githubusercontent.com/appfabriek/bvg-deamon/main/install.ps1 -UseBasicParsing | iex
 ```
 
-Geen extra config nodig. De installer downloadt Node (Unix) of de zelfstandige `.exe` (Windows), zet `bvg-deamon` in je PATH.
+De Windows-installer vraagt zelf UAC op als hij niet elevated start. Hij
+installeert naar `%ProgramData%\bvg-deamon\`, schrijft `credentials.json`
+(alleen leesbaar voor SYSTEM + Administrators), registreert de service en
+start hem meteen.
 
 ## Gebruik
 
 ```bash
-# 1. Sluit aan op een transport in bvgeert.
-bvg-deamon join --hub wss://<endpoint>/client/hubs/<hub> --transport e2ee-transport-1
-# → toont een pair-code; bvgeert-admin keurt 'em goed in
-#   /admin/transport/topics/<id> (veld "Approve pair code")
+# 1. Sluit aan op een transport in bvgeert (direct mode).
+bvg-deamon join --host https://staging.rozendom.nl --token jt_... [--transport my-connection]
 
-# 2. Daemon mode (interactief).
+# 1b. Azure mode (legacy).
+bvg-deamon join --hub wss://<endpoint>/client/hubs/<hub> --transport my-transport
+
+# 2. Daemon mode — verbindt en stream messages tot je 'em kill't.
 bvg-deamon daemon
-# → ontvangt berichten, type 'reply <text>' om de laatste afzender terug te schrijven
-#   of 'send <client-identifier|*> <text>'
+# Op Windows: laat dit aan de service-host over (zonder args is daemon-mode).
 
-# 3. Online clients op de transport.
-bvg-deamon clients
-bvg-deamon clients --online
-
-# 4. Direct bericht.
+# 3. Azure-only helpers.
+bvg-deamon clients [--online]
 bvg-deamon send <client-identifier|*> "hallo daar"
 
-# 5. Loskoppelen (alleen lokale creds wissen).
+# 4. Loskoppelen (alleen lokale creds wissen).
 bvg-deamon unpair
 ```
 
-Credentials staan in `~/.config/bvg-deamon/credentials.json` (Unix) of `%LOCALAPPDATA%\bvg-deamon\` (Windows), mode 0600.
+### Re-pairen zonder herinstall (Windows)
+
+```powershell
+$env:BVG_DEAMON_CREDENTIALS = "$env:ProgramData\bvg-deamon\credentials.json"
+& "$env:ProgramData\bvg-deamon\bvg-deamon.exe" join --host https://staging.rozendom.nl --token jt_...
+Restart-Service bvg-deamon
+```
+
+### Uninstall (Windows)
+
+```powershell
+iwr https://raw.githubusercontent.com/appfabriek/bvg-deamon/main/uninstall.ps1 -UseBasicParsing | iex
+# of, met behoud van credentials/logs:
+&  "$env:ProgramData\bvg-deamon\uninstall.ps1" -KeepFiles
+```
+
+Credentials staan in:
+
+- `~/.config/bvg-deamon/credentials.json` (Unix, mode 0600)
+- `%LOCALAPPDATA%\bvg-deamon\credentials.json` (Windows interactive)
+- `%ProgramData%\bvg-deamon\credentials.json` (Windows service, ACL alleen
+  SYSTEM + Administrators)
+
+Logs (Windows-service): `%ProgramData%\bvg-deamon\logs\bvg-deamon-*.log`
+(rolling, 10 MB × 5 bestanden).
 
 ## Wat is dit precies
 
-Bvgeert is een multi-tenant Rails-app waar verschillende domeinen draaien. Elk domein kan een Azure Web PubSub-resource koppelen, en headless clients (servers, daemons, agents) verbinden zich daar via deze CLI. Zie het hoofd-project op
-`https://github.com/Geert/bvgeert` — daarin staat het volledige ontwerp van het transportnet.
+Bvgeert is een multi-tenant Rails-app waar verschillende domeinen draaien.
+Headless clients (servers, daemons, agents) verbinden zich via deze CLI.
+Zie het hoofd-project op `https://github.com/Geert/bvgeert` — daarin staat
+het volledige ontwerp van het transportnet.
 
-## Vereisten in Azure (door bvgeert-admin)
+## Direct-mode protocol (kort)
 
-Voor een nieuwe transport:
-1. Op de Azure Web PubSub-hub: `anonymousConnectPolicy: "allow"` (anders kan `bvg-deamon join` niet anoniem connecten).
-2. Event handler-URL: `https://<bvgeert>/webhooks/azure_web_pubsub/<domain-hostname>` met sys- en user-events.
-3. In bvgeert-admin: `/admin/domains/:id/edit` → vul Azure-config in.
-4. In bvgeert-admin: `/admin/transport/topics/new` → maak een transport.
+1. `POST {host}/api/v1/transport/redeem` met body `{ token }`. Respons:
+   `{ client_identifier, registration_token, transport_token, websocket_url, connection_identifier }`.
+2. WSS naar `{websocket_url}?transport_token={transport_token}` met
+   sub-protocol `actioncable-v1-json`.
+3. Wacht op `{ "type": "welcome" }`.
+4. Stuur `{"command":"subscribe","identifier":"{\"channel\":\"TransportChannel\",\"connection_identifier\":\"<conn>\"}"}`.
+5. Wacht op `{ "type": "confirm_subscription" }`.
+6. Verwerk inkomende envelopes (`msg.message.sequence`, `message_type`, `payload`).
+7. Reconnect met exponential backoff op close/error (1s → 60s).
 
-## Architectuur op één pagina
-
-```
-crt2-CLI         Azure Web PubSub          bvgeert
-   │                    │                      │
-   │ ws anonymous       │                      │
-   │ ──────────────────>│ sys.connect ────────>│
-   │                    │ sys.connected ──────>│ ConnectionRequest aanmaken
-   │ <───── pair.code ──│                      │ + sturen via send_to_connection
-   │ "join transport X" │                      │
-   │ ──────────────────>│ user.pairing.req ──>│ ConnectionRequest.target_topic
-   │ ... wait ...       │                      │
-   │                    │                      │ admin approve via /admin/...
-   │                    │                      │ ConnectionRequest#approve!
-   │ <── pair.approved ─│ ── send_to_conn ────│   (client_id, token, fresh azure-url)
-   │ reconnect          │                      │
-   │ ──────────────────>│ sys.connected ──────>│ Transport::Connection record
-   │                    │                      │
-   │ user.publish ──────>│ ────────────────────>│ Transport::Message + fanout
-   │ user.clients.list ─>│ ────────────────────>│ → send_to_conn clients.list_result
-   │ user.req_refresh ──>│ ────────────────────>│ → send_to_conn token.refresh
-```
+Zie [`src/cli/direct.ts`](src/cli/direct.ts) (Node) of
+[`src/cs/BvgDeamon/Direct/ActionCableWorker.cs`](src/cs/BvgDeamon/Direct/ActionCableWorker.cs)
+(Windows).
 
 ## Bouwen (alleen voor dev / nieuwe releases)
 
@@ -88,13 +117,18 @@ pnpm build           # → dist/bvg-deamon.js
 
 Windows `.exe` (op een box met .NET 10 SDK):
 ```powershell
-cd src/cs/BvgDeamon
-dotnet publish -c Release -r win-x64 --self-contained -p:PublishSingleFile=true
+dotnet publish src/cs/BvgDeamon/BvgDeamon.csproj `
+  -c Release -r win-x64 --self-contained `
+  -p:PublishSingleFile=true `
+  -p:IncludeNativeLibrariesForSelfExtract=true
 # resulteert in: src/cs/BvgDeamon/bin/Release/net10.0/win-x64/publish/bvg-deamon.exe
 ```
 
-Releases: GitHub Actions publiceert bij iedere tag de `bvg-deamon.js` en `bvg-deamon.exe` als release assets. De installers downloaden die.
+Releases: GitHub Actions publiceert bij iedere `v*`-tag het volgende:
+- `dist/bvg-deamon.js` (Node-bundle, voor Unix-installer)
+- `bvg-deamon-windows-x64.zip` (bevat `bvg-deamon.exe`, `install.ps1`,
+  `uninstall.ps1`, `README.txt` — voor Windows-installer)
 
 ## Volgende sessie / handoff
 
-Zie [`CLAUDE.md`](CLAUDE.md) als je in een nieuwe Claude-sessie (bijvoorbeeld op rzdm2) verder wil bouwen — daar staat hoe je de Windows-binary maakt.
+Zie [`CLAUDE.md`](CLAUDE.md).
