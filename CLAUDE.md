@@ -4,15 +4,18 @@ Voor een Claude-sessie die deze repo opent (lokaal, in CI, of via SSH op een Win
 
 ## Wat is dit project
 
-`bvg-deamon` is de transport-client voor het BvGeert-netwerk. Hij praat **pure-Azure Web PubSub** (geen HTTPS naar bvgeert) zodat hij vanaf restricted sites kan draaien.
+`bvg-deamon` is de transport-client voor het BvGeert-netwerk. Hij heeft twee modi in één binary, switch-baar op de credentials:
 
-Twee implementaties leveren dezelfde functionaliteit:
+- **Direct mode** (default, voorkeur) — HTTPS naar `bvgeert` voor eenmalige pairing (`POST /api/v1/transport/redeem`), daarna een doorlopende WSS-verbinding naar `/cable` (Rails ActionCable, sub-protocol `actioncable-v1-json`). Geen Azure tussenstap.
+- **Azure mode** (legacy / restricted networks) — pure Azure Web PubSub. Werkt vanaf sites die alleen `wss://*.webpubsub.azure.com:443` uit mogen.
+
+Twee implementaties leveren dezelfde subcommands:
 - **Node CLI** (`src/cli/`) — voor macOS / Linux. Bundle naar één `.js` via esbuild.
-- **C# CLI** (`src/cs/BvgDeamon/`) — voor Windows. Self-contained single-file `.exe` met .NET 10 runtime erin.
+- **C# CLI** (`src/cs/BvgDeamon/`) — voor Windows. Self-contained single-file `.exe` met .NET 10 runtime erin. Draait als Windows-service (`Microsoft.Extensions.Hosting.WindowsServices`).
 
-Beide ondersteunen de subcommands: `join`, `daemon`, `clients`, `send`, `unpair`.
+Subcommands: `join` (--host/--token voor direct; --hub/--transport voor azure), `daemon`, `clients` (azure-only), `send` (azure-only), `unpair`.
 
-Het server-zijde van de pairing-flow leeft in de **bvgeert** repository (https://github.com/Geert/bvgeert). Zie daar `app/controllers/webhooks/azure_web_pubsub_controller.rb`, `app/models/transport/connection_request.rb`, en `docs/technical/transport.md`.
+Het server-zijde van pairing + ActionCable leeft in **bvgeert** (https://github.com/Geert/bvgeert): `app/controllers/api/v1/transport/redeem_controller.rb`, `app/channels/transport_channel.rb`, `app/controllers/webhooks/azure_web_pubsub_controller.rb`.
 
 ## Wat NIET in deze repo zit
 
@@ -29,132 +32,93 @@ pnpm install        # of: npm install
 pnpm build          # esbuild → dist/bvg-deamon.js
 ```
 
-Resulteert in `dist/bvg-deamon.js` als single-file CommonJS bundle. Te draaien met elke Node ≥ 20.
+Resulteert in `dist/bvg-deamon.js` als single-file CommonJS bundle. Te draaien met elke Node ≥ 22 (vereist voor global `WebSocket`).
 
 ### Windows .exe (op rzdm2 of een Windows-box met .NET 10 SDK)
 
 ```powershell
-cd src/cs/BvgDeamon
-dotnet publish -c Release -r win-x64 --self-contained -p:PublishSingleFile=true
-# resulteert in: bin/Release/net10.0/win-x64/publish/bvg-deamon.exe
+dotnet publish src/cs/BvgDeamon/BvgDeamon.csproj `
+  -c Release -r win-x64 --self-contained `
+  -p:PublishSingleFile=true `
+  -p:IncludeNativeLibrariesForSelfExtract=true
+# resulteert in: src/cs/BvgDeamon/bin/Release/net10.0/win-x64/publish/bvg-deamon.exe
 ```
 
-Verplaats de `.exe` naar de root van de repo (of upload als GitHub release asset).
+De CI (`.github/workflows/release.yml`) doet hetzelfde op tag `v*` en publiceert `bvg-deamon-windows-x64.zip` (met `install.ps1` en `uninstall.ps1` erbij) als release-asset.
 
-## Wat een rzdm2-sessie moet doen
+## C#-projectstructuur
 
-Stappenplan voor "het project pakken en de binary bouwen":
+```
+src/cs/BvgDeamon/
+  BvgDeamon.csproj             # Sdk.Worker, .NET 10, win-x64 single-file
+  Program.cs                   # subcommand-dispatcher + service-host (RunDaemon)
+  Credentials.cs               # JSON-shape (direct + azure velden), Mode enum, ACL
+  Direct/
+    RedeemClient.cs            # HTTPS POST /api/v1/transport/redeem
+    DirectJoin.cs              # redeem + save credentials
+    ActionCableWorker.cs       # BackgroundService — WSS-loop, reconnect, lifetime-stop bij auth-fail
+  Azure/
+    AzureJoin.cs               # pairing.code/approved flow
+    AzureWorker.cs             # BackgroundService — Azure WebPubSub-client
+    AzureCommands.cs           # clients/send/RequireCreds (interactive)
+  Logging/
+    SerilogSetup.cs            # rolling files (10 MB × 5) onder %ProgramData%\bvg-deamon\logs
+```
 
-1. **Clone of pull deze repo:**
-   ```powershell
-   git clone https://github.com/appfabriek/bvg-deamon.git
-   cd bvg-deamon
-   ```
+## Installeren als Windows-service
 
-2. **Verifieer toolchain:**
-   ```powershell
-   dotnet --version    # > 10.x verwacht
-   ```
+De volledige installer (`install.ps1`) doet:
+1. UAC self-elevate
+2. Resolve env-vars `BVG_JOIN_TOKEN`, `BVG_BVGEERT_HOST`, `BVG_TRANSPORT` (of `BVG_AZURE_HUB`)
+3. Download `bvg-deamon-windows-x64.zip` van laatste release
+4. Pak uit naar `%ProgramData%\bvg-deamon\`
+5. Roept `bvg-deamon.exe join` aan om te pairen — credentials worden geschreven met restrictieve ACL (alleen SYSTEM + Administrators)
+6. `sc.exe create`, `sc.exe failure` (3×10s restart), `sc.exe start`
+7. Persist `BVG_DEAMON_CREDENTIALS` als per-service registry env-var
 
-3. **Eerste build:**
-   ```powershell
-   cd src\cs\BvgDeamon
-   dotnet restore
-   dotnet build
-   ```
-   Verwachte issues bij eerste build:
-   - **`Azure.Messaging.WebPubSub.Client` package versie**: pin op de versie die in `clients/crt2/daemon-dotnet/` werkt — die heeft al productie-mileage.
-   - **API-verschillen** tussen onze `Program.cs`-schets en de echte SDK-handlers. De Node-versie (`src/cli/index.ts`) en de PoC `clients/crt2/daemon-dotnet/Worker.cs` in de bvgeert-repo zijn referentie.
-
-4. **Publish self-contained:**
-   ```powershell
-   dotnet publish -c Release -r win-x64 --self-contained -p:PublishSingleFile=true
-   ```
-
-5. **Test lokaal:**
-   ```powershell
-   bin\Release\net10.0\win-x64\publish\bvg-deamon.exe join --hub wss://wpspoc59618bvgeert.webpubsub.azure.com/client/hubs/<HUB_NAME> --transport e2ee-transport-1
-   ```
-   Verifieer dat:
-   - Anonieme connect lukt
-   - Pair-code op stdout komt
-   - Na admin-approve een `pairing.approved`-bericht binnenkomt en de credentials lokaal opgeslagen worden
-
-6. **Release:**
-   - Commit + push de bijgewerkte `Program.cs`/`.csproj` als er fixes nodig waren.
-   - Maak een GitHub-release tag (`v0.1.0`) en upload `bvg-deamon.exe` + `dist/bvg-deamon.js` als assets.
-   - De installers (`install.sh` / `install.ps1`) downloaden van `https://github.com/appfabriek/bvg-deamon/releases/latest/download/...`.
+Re-pair zonder herinstall:
+```powershell
+$env:BVG_DEAMON_CREDENTIALS = "$env:ProgramData\bvg-deamon\credentials.json"
+& "$env:ProgramData\bvg-deamon\bvg-deamon.exe" join --host https://staging.rozendom.nl --token jt_...
+Restart-Service bvg-deamon
+```
 
 ## Het server-zijde verwacht
 
-Volgens de bvgeert-implementatie ([`app/controllers/webhooks/azure_web_pubsub_controller.rb`](https://github.com/Geert/bvgeert/blob/main/app/controllers/webhooks/azure_web_pubsub_controller.rb)) snapt de webhook deze user-events:
+**Direct mode** (zie bvgeert `app/controllers/api/v1/transport/redeem_controller.rb` en `app/channels/transport_channel.rb`):
+
+| Stap | Wat |
+|---|---|
+| 1 | `POST /api/v1/transport/redeem` met `{token}` → `{client_identifier, registration_token, transport_token, websocket_url, connection_identifier}` |
+| 2 | WSS naar `<websocket_url>?transport_token=<transport_token>` met sub-protocol `actioncable-v1-json` |
+| 3 | Server stuurt `{type:"welcome"}` → client stuurt `{command:"subscribe", identifier:"{\"channel\":\"TransportChannel\",\"connection_identifier\":\"<conn>\"}"}` |
+| 4 | Server bevestigt met `{type:"confirm_subscription"}` |
+| 5 | Berichten arriveren als `{identifier, message: {sequence, message_type, payload}}` |
+| 6 | Server-pings `{type:"ping"}` zijn no-op |
+
+**Azure mode** (legacy — zie bvgeert `app/controllers/webhooks/azure_web_pubsub_controller.rb`):
 
 | Event-naam (`ce-type` suffix) | Doel |
 |---|---|
-| `pairing.request_topic` | Anonieme client zegt op welke transport hij wil joinen. Payload: `{"topic_identifier": "..."}`. |
-| `clients.list` | Authenticated client vraagt om de members van een topic. Payload: `{"topic_identifier": "..."}`. Antwoord komt als `clients.list_result` system-message. |
-| `request_refresh_token` | Token bijna verlopen; bvgeert mint een nieuwe en stuurt 'em als `token.refresh` system-message. |
-| `publish` | Bericht versturen. Payload: `{"topic_identifier","message_type","payload","target_identifier"}`. |
-
-System-messages die bvgeert stuurt:
-
-| `type`-veld | Inhoud |
-|---|---|
-| `pairing.code` | `code`, `expires_at`, `admin_url` |
-| `pairing.approved` | `client_id`, `registration_token`, `url`, `expires_at` |
-| `pairing.denied` | (geen extra velden) |
-| `token.refresh` | `url`, `expires_at` |
-| `clients.list_result` | `topic_identifier`, `clients: [{identifier, name?, kind, online}]` |
-
-Reguliere envelopes op een topic worden gebroadcast als `group-message` met velden `topic_id`, `topic_identifier`, `sequence`, `sender_identifier`, `target_identifier`, `message_type`, `payload`, etc.
+| `pairing.request_topic` | Anonieme client zegt op welke transport hij wil joinen. |
+| `clients.list` | Authenticated client vraagt members van een topic. |
+| `request_refresh_token` | Token bijna verlopen; bvgeert mint een nieuwe als `token.refresh`. |
+| `publish` | Bericht versturen. |
 
 ## Bekende issues / aandachtspunten
 
-- De `Program.cs` is **een schets**: API-namen van de Azure SDK kunnen afwijken (`WebPubSubClient.SendEventAsync` signature, `Connected`/`Disconnected` event-signatures). De rzdm2-sessie moet ze laten compileren tegen de daadwerkelijke `Azure.Messaging.WebPubSub.Client` v1.0 (of nieuwer).
-- Voor token-refresh in C#: implementeer een achtergrond-task die `expires_at` watches en sendsEvent `request_refresh_token` rond 5 min voor expiry. De Node-implementatie doet dit lazy in `getClientAccessUrl`-callback; in C# is dat met `WebPubSubClientCredential(Func<>)` ook mogelijk maar je moet zelf de URL bijhouden in een variabele die de credential-functor leest.
-- Het Node-bundle gebruikt `picocolors` voor kleuren; in C# kan dat met ANSI-codes als nodig (niet kritiek).
-- `--self-contained` produceert een ~60-80 MB `.exe` met de .NET runtime ingebakken. Dat is noodzakelijk voor het locked-down site-uitgangspunt.
+- **Token-expiry (direct mode)**: `transport_token` is een Rails signed-id (~7 dagen geldig). Bij `reject_subscription` stopt de service (via `IHostApplicationLifetime`) zodat de `sc.exe`-restart-policy 'm probeert. Bij blijvende fout moet de operator opnieuw `bvg-deamon join --host ... --token ...` draaien.
+- **Token-refresh (azure mode)**: nog niet geïmplementeerd in de C#-versie. Operator moet `unpair` + `join` herhalen als access_url verloopt. Voor stille refresh: `WebPubSubClientCredential(Func<>)` die de credentials uit bestand opnieuw inleest.
+- **`--self-contained` produceert een ~77 MB `.exe`** met de .NET 10 runtime ingebakken. Noodzakelijk voor locked-down sites.
+- **Logs**: `%ProgramData%\bvg-deamon\logs\bvg-deamon-*.log` (rolling, 10 MB × 5 bestanden). Bij interactive runs (zonder `BVG_DEAMON_CREDENTIALS` onder ProgramData) logt 'ie naast de exe.
 
 ## Verifieer met server
 
-De bvgeert-server moet draaien en Azure-config hebben:
-1. Op de Azure-hub: `anonymousConnectPolicy: "allow"`.
-2. Event handler-URL in Azure: `https://<bvgeert>/webhooks/azure_web_pubsub/<domain-hostname>`.
-3. In bvgeert: een transport (topic) aangemaakt via `/admin/transport/topics/new`.
+Zie [`docs/operations/STAGING.md`](https://github.com/Geert/bvgeert/blob/main/docs/operations/STAGING.md) in de bvgeert-repo voor het live-test stappenplan op staging.rozendom.nl.
 
-Vraag de bvgeert-admin om de hub-URL en topic-identifier. Test dan met `bvg-deamon join`.
-
-## Workflows / CI
-
-Er is nog **geen** GitHub Actions workflow voor automatische release-builds. Als je dat toevoegt:
-
-```yaml
-# .github/workflows/release.yml — schets
-name: Release
-on:
-  push:
-    tags: ["v*"]
-jobs:
-  node:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-      - run: npm install
-      - run: npm run build
-      - uses: softprops/action-gh-release@v1
-        with:
-          files: dist/bvg-deamon.js
-  windows:
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-dotnet@v4
-        with: { dotnet-version: '10.x' }
-      - run: dotnet publish src/cs/BvgDeamon -c Release -r win-x64 --self-contained -p:PublishSingleFile=true
-      - uses: softprops/action-gh-release@v1
-        with:
-          files: src/cs/BvgDeamon/bin/Release/net10.0/win-x64/publish/bvg-deamon.exe
+Snelle check vanaf de server-kant:
+```bash
+# Op de bvgeert-host:
+bin/rails runner 'Transport::Router.fanout(connection_identifier: "...", message_type: "hello", payload: "ping")'
 ```
-
-Tot dat werkt: handmatig builden + uploaden via `gh release create`.
+en kijk naar `%ProgramData%\bvg-deamon\logs\bvg-deamon-*.log` op de client.
