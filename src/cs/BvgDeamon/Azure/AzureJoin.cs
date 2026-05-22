@@ -8,14 +8,33 @@ namespace BvgDeamon.Azure;
 
 public static class AzureJoin
 {
-    public static async Task<int> RunAsync(string hub, string transport)
+    public static async Task<int> RunAsync(string hub, string transport, string? token = null)
     {
-        Console.WriteLine("connecting to Azure anonymously...");
+        Console.WriteLine(token != null
+            ? "connecting to Azure (token redeem)..."
+            : "connecting to Azure anonymously...");
         await using var client = new WebPubSubClient(new Uri(hub));
 
         TaskCompletionSource<JsonElement?> approvedTcs = new();
         TaskCompletionSource<bool> deniedTcs = new();
         bool topicRequested = false;
+        bool tokenRedeemed = false;
+
+        client.Connected += async (e) =>
+        {
+            if (token != null && !tokenRedeemed)
+            {
+                tokenRedeemed = true;
+                // Server-side redeem: skips the pair-code/admin-approve dance and goes
+                // straight to pairing.approved (Node parity, see src/cli/index.ts:121).
+                await AzureCommands.SendEvent(client, "redeem_join_token",
+                    new Dictionary<string, object?>
+                    {
+                        ["token"] = token,
+                        ["topic_identifier"] = transport
+                    });
+            }
+        };
 
         client.ServerMessageReceived += async (e) =>
         {
@@ -25,6 +44,9 @@ public static class AzureJoin
             switch (type)
             {
                 case "pairing.code":
+                    // Skip the pair-code dance entirely when a token was supplied —
+                    // the redeem_join_token event is already in flight from Connected.
+                    if (token != null) return;
                     var code = msg.Value.GetProperty("code").GetString();
                     Console.WriteLine();
                     Console.WriteLine($"pair code: {code}");
