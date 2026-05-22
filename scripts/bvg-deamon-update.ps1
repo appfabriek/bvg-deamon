@@ -97,7 +97,14 @@ try {
 
   $localHash = (Get-FileHash -Path $zipPath -Algorithm SHA256).Hash.ToLower()
   if ($shaAsset) {
-    $shaText = (Invoke-WebRequest -Uri $shaAsset.browser_download_url -UseBasicParsing -TimeoutSec 30).Content.Trim()
+    $shaResp = Invoke-WebRequest -Uri $shaAsset.browser_download_url -UseBasicParsing -TimeoutSec 30
+    # Invoke-WebRequest returns .Content as Byte[] when the server omits a text
+    # Content-Type (which GitHub does for raw release assets). Always decode.
+    $shaText = if ($shaResp.Content -is [byte[]]) {
+      [System.Text.Encoding]::UTF8.GetString($shaResp.Content).Trim()
+    } else {
+      ([string]$shaResp.Content).Trim()
+    }
     $expectedHash = ($shaText -split '\s+')[0].ToLower()
     if ($localHash -ne $expectedHash) {
       Log "ERROR" "sha256 mismatch (downloaded=$localHash expected=$expectedHash) - aborting"
