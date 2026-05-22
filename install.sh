@@ -34,6 +34,21 @@ done_() { printf "\033[32m%s\033[0m\n" "$1"; }
 require_curl() { command -v curl >/dev/null 2>&1 || { err "curl not found"; exit 1; }; }
 require_curl
 
+# --- Pre-flight checks ---------------------------------------------------
+# Disk space (need ~250MB for Node bundle + Node-runtime download fallback)
+case "$(uname -s)" in
+  Linux|Darwin)
+    free_mb="$(df -m "$HOME" 2>/dev/null | awk 'NR==2 {print $4}')"
+    if [ -n "${free_mb:-}" ] && [ "$free_mb" -lt 250 ]; then
+      err "less than 250 MB free in $HOME — install needs ~200 MB"; exit 1
+    fi
+    ;;
+esac
+# GitHub reachability — warn (don't fail) so corp proxies don't break things
+if ! curl -fsS --max-time 5 -o /dev/null https://github.com/ 2>/dev/null; then
+  say "WARN: github.com not reachable in 5s — download likely to fail"
+fi
+
 # Pick install prefix that's writable (drop to ~/.local if needed).
 if [ ! -w "$INSTALL_PREFIX/bin" ] && [ "$INSTALL_PREFIX" = "/usr/local" ]; then
   INSTALL_PREFIX="$HOME/.local"
@@ -88,6 +103,21 @@ chmod +x "$BIN_DIR/bvg-deamon"
 
 done_ "bvg-deamon installed to $BIN_DIR/bvg-deamon"
 
+# --- Self-update bookkeeping --------------------------------------------
+# Pull the updater script + a version.txt sibling for later semver-compare.
+UPDATER_URL="https://github.com/${REPO}/releases/latest/download/bvg-deamon-update.sh"
+VERSION_URL="https://github.com/${REPO}/releases/latest/download/version.txt"
+if curl -fsSL -o "$LIB_DIR/bvg-deamon-update.sh" --max-time 30 "$UPDATER_URL" 2>/dev/null; then
+  chmod +x "$LIB_DIR/bvg-deamon-update.sh"
+else
+  # Fallback for releases that don't ship the updater asset yet.
+  curl -fsSL -o "$LIB_DIR/bvg-deamon-update.sh" --max-time 30 \
+    "https://raw.githubusercontent.com/${REPO}/main/scripts/bvg-deamon-update.sh" 2>/dev/null || true
+  [ -f "$LIB_DIR/bvg-deamon-update.sh" ] && chmod +x "$LIB_DIR/bvg-deamon-update.sh"
+fi
+curl -fsSL -o "$LIB_DIR/version.txt" --max-time 30 "$VERSION_URL" 2>/dev/null || \
+  printf '0.0.0' > "$LIB_DIR/version.txt"
+
 # Decide pairing route from env-vars.
 HAS_TOKEN="${BVG_JOIN_TOKEN:-}"
 PAIRED=0
@@ -136,10 +166,38 @@ RestartSec=5
 [Install]
 WantedBy=default.target
 EOF
+      # --- Daily self-update timer (Linux systemd-user) ---
+      if [ -x "$LIB_DIR/bvg-deamon-update.sh" ]; then
+        cat >"$UNIT_DIR/bvg-deamon-update.service" <<EOF
+[Unit]
+Description=BvGeert transport daemon — self-update check
+
+[Service]
+Type=oneshot
+ExecStart=$LIB_DIR/bvg-deamon-update.sh
+EOF
+        cat >"$UNIT_DIR/bvg-deamon-update.timer" <<EOF
+[Unit]
+Description=Run bvg-deamon self-update daily
+
+[Timer]
+OnBootSec=15min
+OnUnitActiveSec=1d
+RandomizedDelaySec=1h
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+      fi
       if command -v systemctl >/dev/null 2>&1; then
         systemctl --user daemon-reload || true
         systemctl --user enable --now bvg-deamon.service || true
         done_ "systemd-user service draait: bvg-deamon.service"
+        if [ -f "$UNIT_DIR/bvg-deamon-update.timer" ]; then
+          systemctl --user enable --now bvg-deamon-update.timer || true
+          done_ "self-update timer: bvg-deamon-update.timer (daily, +random delay)"
+        fi
       else
         say "systemd niet beschikbaar — unit-bestand staat in $UNIT_DIR"
       fi
@@ -167,6 +225,36 @@ EOF
       launchctl unload "$PLIST" 2>/dev/null || true
       launchctl load "$PLIST"
       done_ "launchd-agent geladen: com.appfabriek.bvg-deamon"
+
+      # --- Daily self-update launchd-agent (macOS) ---
+      if [ -x "$LIB_DIR/bvg-deamon-update.sh" ]; then
+        UPDATE_PLIST="$HOME/Library/LaunchAgents/com.appfabriek.bvg-deamon-update.plist"
+        # Random hour between 3-4am to spread API load across clients.
+        UH=$((3 + RANDOM % 2))
+        UM=$((RANDOM % 60))
+        cat >"$UPDATE_PLIST" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.appfabriek.bvg-deamon-update</string>
+  <key>ProgramArguments</key><array>
+    <string>$LIB_DIR/bvg-deamon-update.sh</string>
+  </array>
+  <key>StartCalendarInterval</key><dict>
+    <key>Hour</key><integer>$UH</integer>
+    <key>Minute</key><integer>$UM</integer>
+  </dict>
+  <key>RunAtLoad</key><false/>
+  <key>StandardOutPath</key><string>/tmp/bvg-deamon-update.log</string>
+  <key>StandardErrorPath</key><string>/tmp/bvg-deamon-update.err</string>
+</dict>
+</plist>
+EOF
+        launchctl unload "$UPDATE_PLIST" 2>/dev/null || true
+        launchctl load "$UPDATE_PLIST"
+        done_ "self-update launchd-agent geladen: com.appfabriek.bvg-deamon-update (daily at ${UH}:$(printf '%02d' $UM))"
+      fi
       ;;
   esac
   exit 0

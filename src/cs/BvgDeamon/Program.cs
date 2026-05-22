@@ -21,6 +21,11 @@ public static class Program
             PrintUsage();
             return 0;
         }
+        if (args[0] is "-v" or "--version" or "version")
+        {
+            Console.WriteLine(GetVersion());
+            return 0;
+        }
 
         try
         {
@@ -168,6 +173,21 @@ for the service).
         for (int i = 0; i < args.Length - 1; i++)
             if (args[i] == "--" + name) return args[i + 1];
         return null;
+    }
+
+    private static string GetVersion()
+    {
+        // InformationalVersion is what `dotnet publish -p:Version=...` sets; falls back to
+        // AssemblyVersion. We strip any "+gitsha" suffix so output is just "X.Y.Z".
+        var asm = typeof(Program).Assembly;
+        var info = asm.GetCustomAttributes(typeof(System.Reflection.AssemblyInformationalVersionAttribute), false);
+        if (info.Length > 0)
+        {
+            var v = ((System.Reflection.AssemblyInformationalVersionAttribute)info[0]).InformationalVersion;
+            var plus = v.IndexOf('+');
+            return plus >= 0 ? v[..plus] : v;
+        }
+        return asm.GetName().Version?.ToString() ?? "0.0.0";
     }
 }
 
