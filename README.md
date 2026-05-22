@@ -32,6 +32,22 @@ $env:BVG_TRANSPORT    = "my-connection"   # optional
 iwr https://raw.githubusercontent.com/appfabriek/bvg-deamon/main/install.ps1 -UseBasicParsing | iex
 ```
 
+Voor klanten op restricted networks die geen rechtstreekse HTTPS naar
+bvgeert hebben, set je **beide** envs — direct wordt eerst geprobeerd, en
+bij failure (DNS/TCP/HTTP) valt de installer automatisch terug op azure:
+
+```powershell
+$env:BVG_JOIN_TOKEN   = "jt_..."
+$env:BVG_BVGEERT_HOST = "https://staging.rozendom.nl"
+$env:BVG_AZURE_HUB    = "wss://xxx.webpubsub.azure.com/client/hubs/<hub>"
+$env:BVG_TRANSPORT    = "my-connection"
+iwr https://raw.githubusercontent.com/appfabriek/bvg-deamon/main/install.ps1 -UseBasicParsing | iex
+```
+
+Azure-only (skip direct compleet): laat `BVG_BVGEERT_HOST` weg en zet
+alleen `BVG_AZURE_HUB` + `BVG_TRANSPORT` (+ optioneel `BVG_JOIN_TOKEN`
+voor auto-pair zonder admin-approve).
+
 De Windows-installer vraagt zelf UAC op als hij niet elevated start. Hij
 installeert naar `%ProgramData%\bvg-deamon\`, schrijft `credentials.json`
 (alleen leesbaar voor SYSTEM + Administrators), registreert de service en

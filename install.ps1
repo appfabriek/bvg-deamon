@@ -107,16 +107,41 @@ $CredentialsPath = Join-Path $InstallDir "credentials.json"
 $env:BVG_DEAMON_CREDENTIALS = $CredentialsPath
 
 Say "pairing with bvgeert..."
-$joinArgs = @()
+
+# Try direct route first if BVG_BVGEERT_HOST is set. If direct fails AND BVG_AZURE_HUB
+# is also set, fall back to the azure route — this covers restricted networks that
+# can't reach bvgeert on 443 directly but do allow wss://*.webpubsub.azure.com:443.
+$paired = $false
+
 if ($BvgeertHost) {
-  $joinArgs += @("join", "--host", $BvgeertHost, "--token", $JoinToken)
-  if ($Transport) { $joinArgs += @("--transport", $Transport) }
-} else {
-  if (-not $Transport) { Fail "BVG_TRANSPORT is required for azure mode" }
-  $joinArgs += @("join", "--hub", $AzureHub, "--transport", $Transport)
+  Say "  trying direct route via $BvgeertHost..."
+  $directArgs = @("join", "--host", $BvgeertHost, "--token", $JoinToken)
+  if ($Transport) { $directArgs += @("--transport", $Transport) }
+  & $ExePath @directArgs
+  if ($LASTEXITCODE -eq 0) {
+    $paired = $true
+    Done "  paired via direct route"
+  } elseif ($AzureHub) {
+    Say "  direct route failed (exit $LASTEXITCODE) - falling back to azure route"
+  } else {
+    Fail "direct route failed (exit $LASTEXITCODE) and no BVG_AZURE_HUB to fall back on"
+  }
 }
-& $ExePath @joinArgs
-if ($LASTEXITCODE -ne 0) { Fail "pairing failed (exit $LASTEXITCODE)" }
+
+if (-not $paired -and $AzureHub) {
+  if (-not $Transport) { Fail "BVG_TRANSPORT is required for azure route" }
+  Say "  trying azure route via $AzureHub..."
+  $azureArgs = @("join", "--hub", $AzureHub, "--transport", $Transport, "--token", $JoinToken)
+  & $ExePath @azureArgs
+  if ($LASTEXITCODE -eq 0) {
+    $paired = $true
+    Done "  paired via azure route"
+  } else {
+    Fail "azure route failed (exit $LASTEXITCODE)"
+  }
+}
+
+if (-not $paired) { Fail "pairing failed - no route succeeded" }
 
 # Defensive lock-down: bvg-deamon.exe already restricts the ACL on save, but
 # enforce the spec ("SYSTEM + Administrators read only") explicitly here too.

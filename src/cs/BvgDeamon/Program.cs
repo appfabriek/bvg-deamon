@@ -84,14 +84,32 @@ for the service).
         var token = ParseFlag(args, "token") ?? Environment.GetEnvironmentVariable("BVG_JOIN_TOKEN");
         var transport = ParseFlag(args, "transport") ?? Environment.GetEnvironmentVariable("BVG_TRANSPORT");
 
-        if (!string.IsNullOrEmpty(host) && !string.IsNullOrEmpty(token))
-            return await DirectJoin.RunAsync(host, token, transport);
+        var canDirect = !string.IsNullOrEmpty(host) && !string.IsNullOrEmpty(token);
+        var canAzure  = !string.IsNullOrEmpty(hub)  && !string.IsNullOrEmpty(transport);
 
-        if (!string.IsNullOrEmpty(hub) && !string.IsNullOrEmpty(transport))
-            return await AzureJoin.RunAsync(hub, transport);
+        // Try direct first when possible. If direct fails *and* azure is also configured,
+        // fall back to the azure route. The operator can force azure-only by leaving
+        // BVG_BVGEERT_HOST unset.
+        if (canDirect)
+        {
+            try
+            {
+                var rc = await DirectJoin.RunAsync(host!, token!, transport);
+                if (rc == 0 || !canAzure) return rc;
+                Console.Error.WriteLine($"direct join returned exit {rc}, falling back to azure...");
+            }
+            catch (Exception ex) when (canAzure)
+            {
+                Console.Error.WriteLine($"direct join failed ({ex.Message}), falling back to azure...");
+            }
+        }
+
+        if (canAzure)
+            return await AzureJoin.RunAsync(hub!, transport!, token);
 
         Console.Error.WriteLine("usage: bvg-deamon join --host <host> --token <jt_...> [--transport <name>]");
-        Console.Error.WriteLine("   or: bvg-deamon join --hub <wss-url> --transport <identifier>");
+        Console.Error.WriteLine("   or: bvg-deamon join --hub <wss-url> --transport <identifier> [--token <jt_...>]");
+        Console.Error.WriteLine("   or: set both BVG_BVGEERT_HOST and BVG_AZURE_HUB for automatic fallback");
         return 2;
     }
 
