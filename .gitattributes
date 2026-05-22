@@ -1,0 +1,10 @@
+* text=auto
+
+# Shell scripts must keep LF endings so bash on Linux/macOS can execute them
+# even when the file was touched from a Windows checkout.
+*.sh text eol=lf
+install.sh text eol=lf
+
+# PowerShell scripts: keep CRLF on Windows checkouts (Windows tools expect it)
+# but allow LF on Unix checkouts.
+*.ps1 text eol=crlf
