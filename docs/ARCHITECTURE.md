@@ -5,22 +5,17 @@ loopt. Voor de happy-path "wat moet ik installeren": zie [OPERATIONS.md](OPERATI
 
 ## Twee modes in één binary
 
-```
-┌────────────────────────────────────────────────────────────────┐
-│  bvg-deamon (single binary — exe op Windows, .js bundle op Unix)│
-│                                                                  │
-│  ┌──────────────┐                       ┌───────────────────┐   │
-│  │ Direct mode  │                       │   Azure mode      │   │
-│  │              │                       │                   │   │
-│  │ HTTPS redeem │   credentials.json    │ anonymous WSS     │   │
-│  │     ↓        │   determines mode:    │  + redeem_token   │   │
-│  │ ActionCable  │   bvgeert_host →      │  → pairing.       │   │
-│  │ WSS to /cable│   direct              │      approved     │   │
-│  │              │   azure_hub_url →     │     ↓             │   │
-│  │              │   azure               │ Azure WPS group   │   │
-│  └──────────────┘                       │  + send_to_user   │   │
-│                                         └───────────────────┘   │
-└────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart LR
+    subgraph binary["bvg-deamon — single binary"]
+        Direct["Direct mode<br/>HTTPS redeem<br/>+ ActionCable WSS"]
+        Azure["Azure mode<br/>anonymous WSS<br/>+ redeem_join_token"]
+    end
+    Creds[("credentials.json")]
+    Creds -- bvgeert_host set --> Direct
+    Creds -- azure_hub_url set --> Azure
+    Direct -.->|run as<br/>BackgroundService| Worker1[ActionCableWorker.cs]
+    Azure -.->|run as<br/>BackgroundService| Worker2[AzureWorker.cs]
 ```
 
 `Credentials.Mode` (C#) en `credentialsMode()` (Node) leiden de modus af uit
@@ -36,37 +31,33 @@ en `Azure/AzureWorker.cs`). De Generic Host kiest op `Mode`.
 
 ## Direct mode flow
 
-```
-┌──────────┐                              ┌──────────────┐
-│ client   │                              │   bvgeert    │
-│          │                              │              │
-│  1. POST /api/v1/transport/redeem        │              │
-│     body: {token: "jt_..."}              │              │
-│  ───────────────────────────────────────►│              │
-│                                          │ JoinToken.   │
-│                                          │  redeem!     │
-│  ◄───────────────────────────────────────│ → Client+   │
-│  201 {client_identifier, transport_token,│   Membership│
-│        websocket_url, connection_id}     │              │
-│                                          │              │
-│  2. WSS {websocket_url}?transport_token  │              │
-│     sub-protocol actioncable-v1-json     │              │
-│  ───────────────────────────────────────►│ ApplicationCable
-│  ◄───────────────────────────────────────│ verifies     │
-│  {type:"welcome"}                        │ signed-id    │
-│                                          │              │
-│  3. {command:"subscribe",                │              │
-│      identifier:{TransportChannel,       │              │
-│                  connection_identifier}} │              │
-│  ───────────────────────────────────────►│ TransportChan│
-│  ◄───────────────────────────────────────│ subscribed   │
-│  {type:"confirm_subscription"}           │              │
-│                                          │              │
-│  ┄┄┄┄┄ live broadcasts ┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄ │              │
-│  ◄───────────────────────────────────────│ Transport::  │
-│  {identifier, message: {sequence,        │  Router.     │
-│     message_type, payload}}              │  fanout      │
-└──────────┘                              └──────────────┘
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as bvg-deamon client
+    participant B as bvgeert (Rails)
+    participant DB as Transport tables
+
+    Note over C,B: 1. One-time pairing over HTTPS
+    C->>B: POST /api/v1/transport/redeem<br/>{ token: "jt_..." }
+    B->>DB: Transport::JoinToken.redeem!<br/>→ Client + Membership
+    B-->>C: 201 { client_identifier,<br/>transport_token,<br/>websocket_url,<br/>connection_identifier }
+
+    Note over C,B: 2. Persistent WSS to /cable (ActionCable)
+    C->>B: WSS websocket_url?transport_token=...<br/>sub-protocol: actioncable-v1-json
+    B->>B: ApplicationCable verifies signed-id
+    B-->>C: { type: "welcome" }
+
+    C->>B: { command: "subscribe",<br/>identifier: { TransportChannel,<br/>connection_identifier } }
+    B-->>C: { type: "confirm_subscription" }
+
+    Note over C,B: 3. Live broadcasts (until disconnect)
+    loop on Transport::Router.fanout
+        B-->>C: { identifier,<br/>message: { sequence,<br/>message_type, payload } }
+    end
+
+    Note over C: reconnect: backoff 1s→60s,<br/>reset only after confirm_subscription
+    Note over C: on reject_subscription:<br/>StopApplication() →<br/>sc.exe failure-policy retries
 ```
 
 Reconnect: exponential backoff 1s → 60s. Backoff reset alleen na succesvolle
@@ -80,41 +71,36 @@ draaien via `bvg-deamon join`.
 
 ## Azure mode flow
 
-```
-┌──────────┐                ┌────────────────┐         ┌──────────┐
-│ client   │                │ Azure WebPubSub │         │  bvgeert │
-│          │                │  hub e2e_test   │         │          │
-│ 1. WSS (anonymous,        │                 │         │          │
-│    no userId)             │                 │         │          │
-│ ──────────────────────────►│ sys.connect     │         │          │
-│                           │ webhook ───────►│ assign  │          │
-│ ◄──────────────────────────│                 │ anon-id │          │
-│ {connected: "anon-xxx"}    │                 │         │          │
-│                           │                 │         │          │
-│ 2. send_event              │                 │         │          │
-│    "redeem_join_token"     │                 │         │          │
-│    {token, topic_id}       │                 │         │          │
-│ ──────────────────────────►│ user.event ────►│ JoinToken│         │
-│                           │                 │ .redeem! │         │
-│                           │ ◄─send_to_conn──│ +client  │         │
-│ ◄──────────────────────────│ pairing.        │ +token   │         │
-│ {type:"pairing.approved",  │  approved       │          │         │
-│  client_id, url, expires}  │                 │          │         │
-│                           │                 │          │         │
-│ 3. reconnect with new      │                 │          │         │
-│    access_url (JWT, roles  │                 │          │         │
-│    sendToUser+joinLeave)   │                 │          │         │
-│ ──────────────────────────►│ sys.connect ────►│ create   │         │
-│ {connected, userId=cl_...} │ + sys.connected │ endpoint │         │
-│                           │                 │ kind=    │         │
-│                           │                 │ azure_*  │         │
-│                           │                 │          │         │
-│ ┄┄┄┄┄ live ┄┄┄┄┄┄┄┄┄┄┄    │                 │          │         │
-│ ◄──────────────────────────│ send_to_user ───│ Transport│         │
-│ envelope                   │                 │ ::Router │         │
-│                           │                 │ ::Adapters         │
-│                           │                 │ ::AzureWPS         │
-└──────────┘                └────────────────┘ └──────────┘
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as bvg-deamon client
+    participant A as Azure WebPubSub hub
+    participant B as bvgeert (Rails)
+
+    Note over C,A: 1. Anonymous bootstrap
+    C->>A: WSS (no userId)
+    A->>B: sys.connect webhook
+    B-->>A: assign anon-<hex> userId
+    A-->>C: connected as anon-xxx
+
+    Note over C,A: 2. Server-side token redeem
+    C->>A: send_event "redeem_join_token"<br/>{ token, topic_identifier }
+    A->>B: user.event webhook
+    B->>B: Transport::JoinToken.redeem!<br/>+ mint access_url (1h JWT)
+    B->>A: send_to_connection<br/>{ type: "pairing.approved",<br/>client_id, access_url, expires }
+    A-->>C: pairing.approved
+
+    Note over C,A: 3. Reconnect as authenticated client
+    C->>A: WSS access_url<br/>(JWT roles: sendToUser + joinLeaveGroup)
+    A->>B: sys.connected webhook (userId=cl_…)
+    B->>B: create azure_web_pubsub Endpoint<br/>+ Transport::Session
+
+    Note over C,A,B: 4. Live envelopes via Azure send_to_user
+    loop on Transport::Router.fanout
+        B->>A: AzureWebPubSubServiceClient.send_to_user
+        A-->>C: envelope
+    end
 ```
 
 Met `--token`: skip de pair-code-dance (geen `pairing_request_topic`, geen
@@ -130,31 +116,25 @@ verbinding opnieuw proberen.
 
 ## Auto-fallback: direct → azure
 
-```
-              ┌────────────────────┐
-              │ install.ps1 / .sh  │
-              │ CmdJoin            │
-              └─────────┬──────────┘
-                        │
-       BVG_BVGEERT_HOST  set?
-                        │
-        ┌───────────────┴───────────────┐
-        ▼ yes                        no ▼
-  try DirectJoin                  azure-only
-    │                                  │
-    success? ──── yes ──► done         ▼
-    │                              AzureJoin
-    no                                  │
-    │                              with token?
-    BVG_AZURE_HUB set?            ┌───┴───┐
-    │                          yes▼       no▼
-   yes                       skip-     admin-
-    ▼                        pair-     approve
-  AzureJoin                  code      flow
-    │
-    (with token if set)
-    │
-    done / fail
+```mermaid
+flowchart TD
+    Start([install.ps1 / install.sh<br/>or bvg-deamon join]) --> HasHost{BVG_BVGEERT_HOST<br/>set?}
+    HasHost -- no --> AzureOnly[try AzureJoin]
+    HasHost -- yes --> TryDirect[try DirectJoin]
+    TryDirect --> DirectOk{success?<br/>exit == 0}
+    DirectOk -- yes --> Done([paired via direct])
+    DirectOk -- no --> HasAzure{BVG_AZURE_HUB<br/>set?}
+    HasAzure -- yes --> AzureOnly
+    HasAzure -- no --> Fail([fail])
+    AzureOnly --> TokenSet{token set?}
+    TokenSet -- yes --> SkipPairCode[skip pair-code dance<br/>redeem_join_token event]
+    TokenSet -- no --> AdminApprove[pair-code +<br/>admin approve in UI]
+    SkipPairCode --> Done2([paired via azure])
+    AdminApprove --> Done2
+
+    style Done fill:#9f9
+    style Done2 fill:#9f9
+    style Fail fill:#f99
 ```
 
 De fallback is **alleen op exit-code** van `bvg-deamon.exe join` — er is geen
@@ -165,35 +145,30 @@ hetzelfde token.
 
 ## Self-update
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│ OS-native scheduler (daily, random minute in 03:00-05:00)  │
-│  Win: Scheduled Task `bvg-deamon-update`                   │
-│  Linux: systemd-user timer `bvg-deamon-update.timer`       │
-│  macOS: launchd `com.appfabriek.bvg-deamon-update`         │
-└──────────────────────────┬──────────────────────────────────┘
-                           │
-                           ▼
-            scripts/bvg-deamon-update.{ps1,sh}
-                           │
-   ┌───────────────────────┼───────────────────────┐
-   ▼                       ▼                       ▼
-GitHub API           SHA256 verify           Service swap
-GET /releases   →    download .zip   →   stop → rename →
-filter !prerelease   compare with        copy new exe →
-+ first()           release .sha256      start → verify
-   │                      │                       │
-   │                      │              ─── happy:  ─►
-   │                      │                  log + exit 0
-   │                      │
-   │                      │              ─── new exe
-   │                      │                  doesn't start:
-   │                      │                  rename .previous
-   │                      │                  back → start → log
-   │                      │
-no update          mismatch:                rollback fails:
-log + exit 0       log + abort              log "manual intervention
-                                            required" + alert
+```mermaid
+flowchart TD
+    Sched[("OS-native scheduler<br/>daily, random minute 03:00-05:00<br/><br/>Win: Scheduled Task<br/>Linux: systemd-user timer<br/>macOS: launchd-agent")] --> Run[scripts/bvg-deamon-update.ps1<br/>or .sh]
+    Run --> API["GitHub Releases API<br/>filter !prerelease && !draft<br/>→ first()"]
+    API --> Compare{remote > local?}
+    Compare -- no --> Exit0([log<br/>'already at latest'<br/>exit 0])
+    Compare -- yes --> Dl[download zip + .sha256]
+    Dl --> Verify{sha256<br/>match?}
+    Verify -- no --> Abort([log<br/>'mismatch — aborting'<br/>exit 2])
+    Verify -- yes --> Stop[Stop-Service]
+    Stop --> Swap["rename:<br/>exe → .previous<br/>.new → exe"]
+    Swap --> Start[Start-Service]
+    Start --> Healthy{service Running<br/>+ version matches?}
+    Healthy -- yes --> Ok([log<br/>'update complete'<br/>exit 0])
+    Healthy -- no --> Rollback["rollback:<br/>rename .previous → exe<br/>Start-Service"]
+    Rollback --> RbOk{rollback<br/>succeeded?}
+    RbOk -- yes --> Rolled([log<br/>'rollback complete<br/>on previous version'<br/>exit 4])
+    RbOk -- no --> Manual([log<br/>'manual intervention<br/>required'<br/>exit 4])
+
+    style Ok fill:#9f9
+    style Exit0 fill:#9f9
+    style Rolled fill:#ff9
+    style Abort fill:#f99
+    style Manual fill:#f99
 ```
 
 Versie-detectie: `version.txt` naast de exe (gestamped door release-workflow)
