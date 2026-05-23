@@ -3,6 +3,18 @@
 Snapshot van wat de client kan, welke versies live zijn, en wat live getest is.
 Laatste update bij release v0.4.1 (2026-05-22).
 
+## Release-progressie
+
+```mermaid
+timeline
+    title bvg-deamon release-historie
+    2026-05-22 : v0.3.0 : Windows-service + direct mode (HTTPS+WSS ActionCable)
+               : v0.3.1 : redeem_join_token in C# AzureJoin + auto-fallback direct→azure
+               : v0.3.2 : ACL-hotfix (standalone paths)
+               : v0.4.0 : Pre-flight checks + daily self-update (Win/Linux/macOS)
+               : v0.4.1 : Updater SHA256-decode hotfix
+```
+
 ## Wat de client doet
 
 `bvg-deamon` is de **transport-client voor het BvGeert-netwerk** — een headless
