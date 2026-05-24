@@ -140,6 +140,14 @@ if (-not (Test-Path $ExePath)) { Fail "bvg-deamon.exe not found after extract" }
 $CredentialsPath = Join-Path $InstallDir "credentials.json"
 $env:BVG_DEAMON_CREDENTIALS = $CredentialsPath
 
+# Een vorige install zet credentials.json read-only voor Administrators
+# (alleen SYSTEM krijgt Full). Bij re-install kan `bvg-deamon join` 'em
+# dan niet overschrijven → 'Access to the path … is denied'. Admins
+# mogen via directory-ACL wel verwijderen — los de stale file dus eerst op.
+if (Test-Path -LiteralPath $CredentialsPath) {
+  Remove-Item -LiteralPath $CredentialsPath -Force -ErrorAction SilentlyContinue
+}
+
 Say "pairing with bvgeert..."
 
 # Try direct route first if BVG_BVGEERT_HOST is set. If direct fails AND BVG_AZURE_HUB
