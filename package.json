@@ -1,6 +1,6 @@
 {
   "name": "bvg-deamon",
-  "version": "0.4.2",
+  "version": "0.4.3",
   "private": true,
   "description": "BvGeert transport daemon — direct ActionCable client with Azure WebPubSub fallback",
   "license": "MIT",
