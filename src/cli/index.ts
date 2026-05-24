@@ -6,6 +6,11 @@ import { WebPubSubClient, WebPubSubJsonProtocol } from "@azure/web-pubsub-client
 import { loadCredentials, saveCredentials, wipeCredentials, credentialMode, Credentials } from "./credentials.js";
 import { joinDirect, daemonDirect } from "./direct.js";
 
+// Wordt door esbuild ingelined via --define:BVG_VERSION='"x.y.z"'.
+// Valt terug op 'unknown' bij directe ts-run zonder define.
+declare const BVG_VERSION: string;
+const VERSION = typeof BVG_VERSION !== "undefined" ? BVG_VERSION : "unknown";
+
 type Subcommand = (args: string[]) => Promise<number>;
 
 const subcommands: Record<string, Subcommand> = {
@@ -21,6 +26,10 @@ async function main(): Promise<number> {
   if (!cmd || cmd === "--help" || cmd === "-h") {
     printUsage();
     return cmd ? 0 : 2;
+  }
+  if (cmd === "--version" || cmd === "-v" || cmd === "version") {
+    console.log(VERSION);
+    return 0;
   }
   const fn = subcommands[cmd];
   if (!fn) {

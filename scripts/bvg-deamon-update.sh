@@ -102,9 +102,12 @@ fi
 REMOTE="${LATEST_TAG#v}"
 log INFO "latest stable tag: $LATEST_TAG ($REMOTE)"
 
-# semver-ish compare: split on dots, compare numerically.
+# semver-ish compare. ver_lt $1 $2  → returns 0 only when $1 is STRICTLY
+# less than $2. Eerdere implementatie gebruikte alleen `sort -V -C` zonder
+# equality-check; gelijke versies (0.4.1 vs 0.4.1) gaven dan "lt=true" en
+# triggerden een onnodige download+swap+rollback elke run.
 ver_lt() {
-  # returns 0 if $1 < $2
+  [ "$1" = "$2" ] && return 1
   printf '%s\n%s\n' "$1" "$2" | sort -V -C 2>/dev/null
 }
 if [ "${1:-}" != "--force" ] && ! ver_lt "$LOCAL" "$REMOTE"; then
