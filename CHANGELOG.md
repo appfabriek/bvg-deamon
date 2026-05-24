@@ -3,6 +3,80 @@
 All notable changes per release. See [docs/STATUS.md](docs/STATUS.md) for a
 capability matrix and live-test evidence.
 
+## [v0.4.7] - 2026-05-24
+
+### Fixed
+- Windows `install.ps1` failed on re-install with `Access to the path
+  'C:\ProgramData\bvg-deamon\credentials.json' is denied`. Previous install
+  hardens the file's ACL to `SYSTEM:F + Administrators:R`, so `bvg-deamon.exe
+  join` can't overwrite it. Admins can still delete via the directory ACL —
+  installer now removes the stale file before re-pairing.
+
+PR: [#15](https://github.com/appfabriek/bvg-deamon/pull/15)
+
+## [v0.4.6] - 2026-05-24
+
+### Fixed
+- Windows `install.ps1` crashed on the disk-space pre-flight with `Get-Item :
+  Could not find item C:\ProgramData` on Win11 build 26200 — a directory-junction
+  quirk where `Get-Item` (without `-LiteralPath -Force`) interprets the path as
+  a glob and fails to resolve. Switched to `[System.IO.DriveInfo]::new()`, which
+  bypasses the path provider entirely.
+
+PR: [#14](https://github.com/appfabriek/bvg-deamon/pull/14)
+
+## [v0.4.5] - 2026-05-24
+
+### Fixed
+- Updater silently exited after `local version: …` log line. `awk … exit`
+  closes its stdin, so `tr` and `curl` upstream receive SIGPIPE. With
+  `set -o pipefail`, the script trapped and `set -e` killed it — no error log,
+  no rollback, no progress. v0.4.4 only addressed `head -1`; awk's own `exit`
+  triggers the same trap. Added `|| true` on the two affected pipes; the
+  existing empty-checks remain the real error handlers.
+- The `bvg-deamon --version` verification pipe (`… | head -1 | tr -d`) had
+  the same race — pipefail trip set `ACTUAL_VER` to empty even when the value
+  came through, causing unnecessary rollbacks.
+
+PR: [#13](https://github.com/appfabriek/bvg-deamon/pull/13)
+
+## [v0.4.4] - 2026-05-24
+
+### Fixed
+- Updater pipeline `… | tr | awk | head -1` triggered SIGPIPE upstream when
+  `head -1` closed its stdin after the first line. With `set -o pipefail` the
+  script trapped intermittently — sometimes upgrades worked, sometimes the
+  script exited after the first log line. Dropped `head -1`; awk already does
+  `print; exit` so emits exactly one line.
+
+PR: [#12](https://github.com/appfabriek/bvg-deamon/pull/12)
+
+## [v0.4.3] - 2026-05-24
+
+### Fixed
+- Existing installs stayed stuck on a buggy updater script forever — there
+  was no mechanism to refresh the updater itself. Updater now downloads the
+  latest version of itself from `releases/latest/download/bvg-deamon-update.sh`,
+  compares sha256, and re-execs with `BVG_UPDATER_REFRESHED=1` as a loop guard
+  if it changed. Self-healing.
+
+PR: [#11](https://github.com/appfabriek/bvg-deamon/pull/11)
+
+## [v0.4.2] - 2026-05-24
+
+### Fixed
+- Node bundle (Linux/macOS) had no `--version` flag, so the updater's
+  post-swap verification (`bvg-deamon --version`) returned `'empty'` and
+  triggered an always-on rollback path. Any real upgrade would have rolled
+  back. `scripts/build-node.mjs` now passes `package.json` version through
+  `esbuild --define BVG_VERSION`; CLI accepts `--version`, `-v`, `version`.
+- `ver_lt 0.4.1 0.4.1` returned true. `sort -V -C` considers an "equal" list
+  as "sorted", so equal versions appeared as "less than". Result: the daily
+  updater retried the same version every run — download, swap, rollback.
+  Added equality-guard before the sort.
+
+PR: [#10](https://github.com/appfabriek/bvg-deamon/pull/10)
+
 ## [v0.4.1] - 2026-05-22
 
 ### Fixed
