@@ -5762,7 +5762,7 @@ async function daemonDirect(creds) {
 }
 
 // src/cli/index.ts
-var VERSION = true ? "0.4.4" : "unknown";
+var VERSION = true ? "0.4.5" : "unknown";
 var subcommands = {
   join: cmdJoin,
   daemon: cmdDaemon,
