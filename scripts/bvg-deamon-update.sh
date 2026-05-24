@@ -118,10 +118,12 @@ RELEASES_JSON="$(curl -fsSL -H "User-Agent: bvg-deamon-updater" -H "Accept: appl
   "https://api.github.com/repos/$REPO/releases" --max-time 30)"
 
 # Pick latest stable tag without jq dependency: grep+sed on the API JSON.
+# awk doet zelf `exit` na de eerste match dus 'head -1' is overbodig én
+# triggert SIGPIPE op upstream → met `set -o pipefail` faalt het script
+# dan stil (zonder log) — intermitterend, hangt af van scheduler-timing.
 LATEST_TAG="$(printf '%s' "$RELEASES_JSON" \
   | tr ',' '\n' \
-  | awk 'BEGIN{tag="";stable=1} /"tag_name"/{gsub(/.*"tag_name":[[:space:]]*"/,""); gsub(/".*/,""); tag=$0} /"prerelease"/{if (index($0,"true")>0) stable=0} /"draft"/{if (index($0,"true")>0) stable=0} /^[[:space:]]*$/ || /\}/{if (tag!="" && stable==1) {print tag; exit} tag=""; stable=1}' \
-  | head -1)"
+  | awk 'BEGIN{tag="";stable=1} /"tag_name"/{gsub(/.*"tag_name":[[:space:]]*"/,""); gsub(/".*/,""); tag=$0} /"prerelease"/{if (index($0,"true")>0) stable=0} /"draft"/{if (index($0,"true")>0) stable=0} /^[[:space:]]*$/ || /\}/{if (tag!="" && stable==1) {print tag; exit} tag=""; stable=1}')"
 
 if [ -z "$LATEST_TAG" ]; then
   log WARN "no stable release found"
