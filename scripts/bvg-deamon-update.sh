@@ -26,6 +26,34 @@ STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/bvg-deamon"
 LOG_FILE="$STATE_DIR/updater.log"
 mkdir -p "$STATE_DIR"
 
+# Self-update voor de updater zelf. Anders blijven oude installs hangen op
+# een buggy updater-script (zie v0.4.1 → v0.4.2). Vóór de echte logica:
+# haal het latest script op, vergelijk sha256 met onszelf, en re-exec als
+# het anders is. Loop-guard via env-var zodat we max 1 keer re-exec'en.
+SCRIPT_PATH="$(readlink -f "$0" 2>/dev/null || echo "$0")"
+if [ "${BVG_UPDATER_REFRESHED:-0}" != "1" ] && [ -w "$SCRIPT_PATH" ]; then
+  UPDATER_URL_LATEST="https://github.com/$REPO/releases/latest/download/bvg-deamon-update.sh"
+  TMP_UPDATER="$(mktemp -t bvg-deamon-update.XXXXXXXX)"
+  if curl -fsSL --max-time 30 -o "$TMP_UPDATER" "$UPDATER_URL_LATEST" 2>/dev/null && [ -s "$TMP_UPDATER" ]; then
+    if command -v sha256sum >/dev/null 2>&1; then
+      CUR_HASH="$(sha256sum "$SCRIPT_PATH" | awk '{print $1}')"
+      NEW_HASH="$(sha256sum "$TMP_UPDATER" | awk '{print $1}')"
+    elif command -v shasum >/dev/null 2>&1; then
+      CUR_HASH="$(shasum -a 256 "$SCRIPT_PATH" | awk '{print $1}')"
+      NEW_HASH="$(shasum -a 256 "$TMP_UPDATER" | awk '{print $1}')"
+    fi
+    if [ -n "${NEW_HASH:-}" ] && [ "${CUR_HASH:-}" != "$NEW_HASH" ]; then
+      mv "$TMP_UPDATER" "$SCRIPT_PATH"
+      chmod +x "$SCRIPT_PATH"
+      printf '%s [INFO] updater script self-updated (sha256 %s)\n' \
+        "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" "$NEW_HASH" | tee -a "$LOG_FILE"
+      export BVG_UPDATER_REFRESHED=1
+      exec "$SCRIPT_PATH" "$@"
+    fi
+    rm -f "$TMP_UPDATER"
+  fi
+fi
+
 log() {
   local lvl="$1"; shift
   local ts; ts="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
