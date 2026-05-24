@@ -118,12 +118,13 @@ RELEASES_JSON="$(curl -fsSL -H "User-Agent: bvg-deamon-updater" -H "Accept: appl
   "https://api.github.com/repos/$REPO/releases" --max-time 30)"
 
 # Pick latest stable tag without jq dependency: grep+sed on the API JSON.
-# awk doet zelf `exit` na de eerste match dus 'head -1' is overbodig én
-# triggert SIGPIPE op upstream → met `set -o pipefail` faalt het script
-# dan stil (zonder log) — intermitterend, hangt af van scheduler-timing.
+# `awk … exit` sluit z'n stdin → `tr` krijgt SIGPIPE → `set -o pipefail`
+# trapt het en kill `set -e` het hele script stil. `|| true` neutraliseert
+# dat; de daaropvolgende empty-check is de echte error-handler.
 LATEST_TAG="$(printf '%s' "$RELEASES_JSON" \
   | tr ',' '\n' \
-  | awk 'BEGIN{tag="";stable=1} /"tag_name"/{gsub(/.*"tag_name":[[:space:]]*"/,""); gsub(/".*/,""); tag=$0} /"prerelease"/{if (index($0,"true")>0) stable=0} /"draft"/{if (index($0,"true")>0) stable=0} /^[[:space:]]*$/ || /\}/{if (tag!="" && stable==1) {print tag; exit} tag=""; stable=1}')"
+  | awk 'BEGIN{tag="";stable=1} /"tag_name"/{gsub(/.*"tag_name":[[:space:]]*"/,""); gsub(/".*/,""); tag=$0} /"prerelease"/{if (index($0,"true")>0) stable=0} /"draft"/{if (index($0,"true")>0) stable=0} /^[[:space:]]*$/ || /\}/{if (tag!="" && stable==1) {print tag; exit} tag=""; stable=1}' \
+  || true)"
 
 if [ -z "$LATEST_TAG" ]; then
   log WARN "no stable release found"
@@ -183,11 +184,12 @@ log INFO "starting service on new version $REMOTE..."
 restart_service
 sleep 3
 
-# Best-effort verify: if the wrapper script exists, run --version.
+# Best-effort verify: if the wrapper script exists, run --version. `|| true`
+# om pipefail-trap door head -1 te voorkomen — anders wordt ACTUAL_VER op ""
+# gezet ook als de versie correct uit de pipe kwam, en valt het script
+# onnodig terug naar rollback.
 if [ -x "$BIN_DIR/bvg-deamon" ]; then
-  if ! ACTUAL_VER="$("$BIN_DIR/bvg-deamon" --version 2>/dev/null | head -1 | tr -d '[:space:]')"; then
-    ACTUAL_VER=""
-  fi
+  ACTUAL_VER="$("$BIN_DIR/bvg-deamon" --version 2>/dev/null | head -1 | tr -d '[:space:]' || true)"
 fi
 
 if [ -n "${ACTUAL_VER:-}" ] && [ "$ACTUAL_VER" = "$REMOTE" ]; then
