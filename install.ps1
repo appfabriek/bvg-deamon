@@ -72,10 +72,13 @@ if ($WinVer.Major -lt 10) {
   Fail "Windows 10 or newer is required (detected: $($WinVer.ToString()))"
 }
 
-# Disk space — 200 MB needed (77MB exe + 77MB rollback + headroom)
-$drive = (Get-Item $env:ProgramData).PSDrive
-if ($drive.Free -lt 200MB) {
-  Fail "less than 200 MB free on drive $($drive.Name): - install needs ~150 MB"
+# Disk space — 200 MB needed (77MB exe + 77MB rollback + headroom).
+# Get-Item zonder -LiteralPath/-Force faalt op Win11 26200 voor
+# C:\ProgramData ("Could not find item") — directory-junction quirk.
+# DriveInfo omzeilt het pad-provider-gedoe helemaal.
+$drive = [System.IO.DriveInfo]::new((Split-Path $env:ProgramData -Qualifier))
+if ($drive.AvailableFreeSpace -lt 200MB) {
+  Fail "less than 200 MB free on drive $($drive.Name) - install needs ~150 MB"
 }
 
 # Reachability of GitHub release host. Don't block on this (corp proxy can be weird)
